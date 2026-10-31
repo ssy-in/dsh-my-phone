@@ -18,7 +18,7 @@
     return
 
   // 音色清单：只用来做合法性校验（真正的发声分支在 voice() 里）
-  const TIMBRES = ['bell', 'kalimba', 'marimba', 'water', 'pop', 'piano', 'violin'].map((id) => ({ id }))
+  const TIMBRES = ['bell', 'kalimba', 'water', 'pop', 'piano', 'violin'].map((id) => ({ id }))
   // 与 widget.js 共用同一个存档键，换音色/音量后引擎能立刻读到
   const SOUND_KEY = 'dsh-my-phone.sound.v2'
 
@@ -252,10 +252,6 @@
             lfo.stop(t0 + dur + 0.05)
             return
           }
-          if (kind === 'marimba') {
-            tink(c, freq, { ...opts, dur: (opts.dur || 0.3) * 0.6, wood: (opts.wood || 0) + 0.028 })
-            return
-          }
           tink(c, freq, opts) // kalimba（默认）
         }
 
@@ -370,19 +366,12 @@
               [1567.98, 0.62, { gain: 0.03, dur: 0.85 }], // G6 收尾
             ])
           },
-          // P2 普通消息：两声，短
+          // P2 普通消息：一声（v1.8.38 从两声改一声 —— 普通消息最频繁，
+          // 两声叠在一起听着像「有急事」，一声轻点就够）
           short() {
             melody([
-              [659.25, 0, { gain: 0.04, dur: 0.3 }], // E5
-              [880, 0.12, { gain: 0.036, dur: 0.5 }], // A5
+              [880, 0, { gain: 0.038, dur: 0.42 }], // A5
             ])
-          },
-          // 按等级挑长度：0 = P0 最急（最长），1 = P1 中等，2 = P2 最短
-          byLevel(level) {
-            const lv = Number(level)
-            if (lv === 0) return this.alert()
-            if (lv === 2) return this.short()
-            return this.notice()
           },
           // 有人连
           notice() {

@@ -352,7 +352,8 @@ check('气泡里是那条授权而不是兜底文案', bubbleText.includes('重�
 
 // 3. 红点跟着 pendingCount 走
 const dot = el.children.find((c) => (c.className || '').includes('dmp-w-dot'))
-check('红点显示待处理数 1', !!dot && dot.style.display === 'flex' && dot.textContent === '1', `display=${dot && dot.style.display} text=${dot && dot.textContent}`)
+// v1.8.36：红点不再带数字（只留一颗会呼吸的小点），所以断言改成「亮着 + 没有文字」
+check('红点在有未读时亮起、且不带数字', !!dot && dot.style.display === 'block' && !dot.textContent, `display=${dot && dot.style.display} text=${dot && dot.textContent}`)
 
 // 4. 藏起来之后，鼠标放上去还能再弹（悬停路径）
 bubble.style.opacity = '0'
@@ -632,6 +633,190 @@ check(
   bubble.textContent.slice(0, 70),
 )
 check('标签是「等授权」而不是「新连接」', bubble.textContent.includes('等授权'), bubble.textContent.slice(0, 40))
+
+// 9b. v1.8.35：gate 的授权文案自带「【会话名】」，气泡不能再补一遍
+//     （用户反馈「授权气泡正文每次看都是两个会话名称」）
+{
+  bubble.style.opacity = '0'
+  const t9b = Date.now() + 3000
+  snapshot = {
+    ...snapshot,
+    unread: 0,
+    notices: [],
+    approvals: [],
+    feed: {
+      pending: [
+        {
+          id: 'a92',
+          seq: 92,
+          at: t9b,
+          text: '【排查会话响应】 正在请求授权...',
+          name: '排查会话响应',
+          level: 0,
+        },
+      ],
+      human: [],
+      tech: [],
+      techRaw: [],
+      techCount: 0,
+      unread: 0,
+      pendingCount: 1,
+    },
+  }
+  runTimers('interval')
+  await tick()
+  await tick()
+  for (let i = 0; i < 10; i++) {
+    runTimers('timeout')
+    await tick()
+  }
+  const times9b = bubble.textContent.split('排查会话响应').length - 1
+  check('授权气泡里会话名只出现一次（不会【A】【A】）', times9b === 1, '出现 ' + times9b + ' 次：' + bubble.textContent.slice(0, 80))
+  check('授权气泡仍说清了它在等授权', bubble.textContent.includes('正在请求授权'), bubble.textContent.slice(0, 60))
+}
+
+// 9c. v1.8.35：一次涌进来 4 条以上的新消息时，被队列截掉的也不能永远不弹
+{
+  bubble.style.opacity = '0'
+  const base9c = Date.now() + 4000
+  const mk = (i) => ({ id: 'h' + (200 + i), seq: 200 + i, at: base9c + i, kind: 'turnok', text: '第 ' + i + ' 条测试消息', level: 2 })
+  snapshot = {
+    ...snapshot,
+    unread: 0,
+    notices: [],
+    approvals: [],
+    feed: { pending: [], human: [mk(1), mk(2), mk(3), mk(4), mk(5)], tech: [], techRaw: [], techCount: 0, unread: 0, pendingCount: 0 },
+  }
+  const seen9c = new Set()
+  const grab9c = () => {
+    const m = /第 (\d) 条测试消息/.exec(bubble.textContent)
+    if (m && bubble.style.opacity === '1') seen9c.add(m[1])
+  }
+  // 只跑「最新排进来的那一个」定时器：runTimers() 会把历史上所有 timeout 一起跑，
+  // 一步就窜到底，中间的几张气泡根本观察不到。
+  const runLatestTimeout = () => {
+    let best = null
+    for (const [id, t] of timers) if (!t.cleared && t.kind === 'timeout' && (!best || id > best[0])) best = [id, t]
+    if (!best) return false
+    best[1].cleared = true
+    best[1].fn()
+    return true
+  }
+  for (let r = 0; r < 40; r++) {
+    runTimers('interval')
+    await tick()
+    grab9c()
+    for (let i = 0; i < 2; i++) {
+      if (!runLatestTimeout()) break
+      await tick()
+      grab9c()
+    }
+  }
+  check('一次涌进 5 条消息，5 条都轮得到弹一次', seen9c.size === 5, '弹过：' + Array.from(seen9c).sort().join(','))
+}
+
+// 9d. v1.8.35：技术类里「出错了 / 上游不通」要按 P1 提示，不能一律当最不紧急的 P2
+{
+  bubble.style.opacity = '0'
+  const t9d = Date.now() + 6000
+  snapshot = {
+    ...snapshot,
+    unread: 0,
+    notices: [],
+    approvals: [],
+    feed: {
+      pending: [],
+      human: [],
+      tech: [{ kind: 'error', at: t9d, text: '【整理插件的悬浮球】 上下文压缩出错' }],
+      techRaw: [],
+      techCount: 1,
+      unread: 0,
+      pendingCount: 0,
+    },
+  }
+  runTimers('interval')
+  await tick()
+  await tick()
+  for (let i = 0; i < 10; i++) {
+    runTimers('timeout')
+    await tick()
+  }
+  check('技术类「出错」弹的是「出错了」而不是泛泛的「新消息」', bubble.textContent.includes('出错了'), bubble.textContent.slice(0, 50))
+}
+
+// 9e. v1.8.36：所有会响声音的气泡都自动消失（不再需要手点），只是按等级停不同时长
+//     P0 10 秒 / P1 6 秒 / P2 3 秒。这里直接看排出去的定时器时长对不对，
+//     再把那张「收起」定时器跑掉，确认气泡自己就没了。
+{
+  const findTimer = (ms) => {
+    for (const [id, t] of timers) if (!t.cleared && t.kind === 'timeout' && t.ms === ms) return [id, t]
+    return null
+  }
+  const runTimer = (ms) => {
+    const hit = findTimer(ms)
+    if (!hit) return false
+    hit[1].cleared = true
+    hit[1].fn()
+    return true
+  }
+  const showOne = async (kind, level, seq, text) => {
+    bubble.style.opacity = '0'
+    bubble.textContent = ''
+    snapshot = {
+      ...snapshot,
+      unread: 0,
+      notices: [],
+      approvals: [],
+      feed: {
+        pending: kind === 'approval' ? [{ id: 'p' + seq, seq, at: Date.now() + 1000, name: '【会话' + seq + '】', text, level }] : [],
+        human: kind === 'approval' ? [] : [{ id: 'h' + seq, seq, at: Date.now() + 1000, kind, text, level }],
+        tech: [],
+        techRaw: [],
+        techCount: 0,
+        unread: 0,
+        pendingCount: kind === 'approval' ? 1 : 0,
+      },
+    }
+    runTimers('interval')
+    await tick()
+    await tick()
+    // 注意：这里**不能**把 timeout 全跑掉 —— 那会把刚排好的「收起」定时器也跑掉，
+    // 气泡直接变透明，就看不到「到点自己收起」之前的样子了。
+    return bubble.style.opacity === '1'
+  }
+
+  const p0shown = await showOne('approval', 0, 301, '【会话301】 正在请求授权：Bash')
+  check('P0（等授权）气泡会弹出来', p0shown, `opacity=${bubble.style.opacity}`)
+  check('P0 的停留时长排的是 10 秒', !!findTimer(10000), '没找到 10000ms 的收起定时器')
+  check('P0 排了下一条的间隔（10 秒 + 间隔）', !!findTimer(10000 + 1400), '没找到 11400ms 的推进定时器')
+  check('P0 到点自己收起，不用手点', runTimer(10000) && bubble.style.opacity === '0', `opacity=${bubble.style.opacity}`)
+  runTimer(10000 + 1400) // 放掉队列占位，否则后面的气泡排不进来
+
+  const p1shown = await showOne('longrun', 1, 302, '【会话302】 一轮已经跑了 8 分钟还没结束')
+  check('P1（值得留意）气泡会弹出来', p1shown, `opacity=${bubble.style.opacity}`)
+  check('P1 的停留时长排的是 6 秒', !!findTimer(6000), '没找到 6000ms 的收起定时器')
+  check('P1 到点自己收起', runTimer(6000) && bubble.style.opacity === '0', `opacity=${bubble.style.opacity}`)
+  runTimer(6000 + 1400)
+
+  const p2shown = await showOne('turnok', 2, 303, '【会话303】 完成了一轮')
+  check('P2（一般消息）气泡会弹出来', p2shown, `opacity=${bubble.style.opacity}`)
+  check('P2 的停留时长排的是 3 秒', !!findTimer(3000), '没找到 3000ms 的收起定时器')
+  check('P2 到点自己收起', runTimer(3000) && bubble.style.opacity === '0', `opacity=${bubble.style.opacity}`)
+  runTimer(3000 + 1400)
+
+  // v1.8.37：「等你回答」提到 P0 —— 5 声 + 停 10 秒，跟「等授权」同一档
+  const qAt = audioLog.length
+  const qshown = await showOne('question', 0, 304, '【会话304】 正在等你回答：要不要继续')
+  check('「等你回答」气泡会弹出来', qshown, `opacity=${bubble.style.opacity}`)
+  check('「等你回答」按 P0 走：停 10 秒', !!findTimer(10000), '没找到 10000ms 的收起定时器')
+  check(
+    '「等你回答」响的是五声那档（alert）',
+    audioLog.slice(qAt).includes('alert') && !audioLog.slice(qAt).includes('short'),
+    audioLog.slice(qAt).join(',') || '(没响)',
+  )
+  runTimer(10000)
+  runTimer(10000 + 1400)
+}
 
 // 10. 事件类型决定标签：level 1 的消息，kind=longrun 要写「跑得有点久」，不能一律按 level 猜成「值得留意」
 bubble.style.opacity = '0'
@@ -948,8 +1133,8 @@ check('备注变了才重画', bodyNode.children[0] !== firstRow && allText(body
   await tick()
   const dot14 = el.children.find((c) => (c.className || '').includes('dmp-w-dot'))
   check(
-    '手机端红点跟着只读快照的待处理数走',
-    !!dot14 && dot14.style.display === 'flex' && dot14.textContent === '3',
+    '手机端红点跟着只读快照的未读亮起（不带数字）',
+    !!dot14 && dot14.style.display === 'block' && !dot14.textContent,
     `display=${dot14 && dot14.style.display} text=${dot14 && dot14.textContent}`,
   )
   // 打开面板 → 进「消息/日志」→ 直接点返回关掉（用户的正常路径）
@@ -1068,6 +1253,85 @@ check('备注变了才重画', bodyNode.children[0] !== firstRow && allText(body
 // 17. v1.8.32：球一开始透明，等第一帧快照到了才显形（不再「logo 比连上桌面还早」）
 {
   check('球最终是显形的（第一帧快照后淡入）', el.style.opacity === '1', 'opacity=' + el.style.opacity)
+}
+
+// 18. v1.8.38：红点只算「没看的 P0/P1」、气泡里会话名只说一次、三级配色要拉开
+{
+  panelIs404 = false
+  remoteSnapshot = null
+  // 直接喂 SSE 帧：它会走 data = json → paint() → autoBubble() 这条真实链路
+  const push = (feed) => {
+    const snap = {
+      lanEnabled: true,
+      tunnelEnabled: false,
+      lanUrl: 'http://192.168.1.107:18391/',
+      pairUrl: 'http://192.168.1.107:18391/pair?t=abc',
+      ticketExpiresAt: Date.now() + 120000,
+      tunnelAutoOffMinutes: 0,
+      mutedUntil: 0,
+      unread: 0,
+      deviceList: [],
+      notices: [],
+      approvals: [],
+      events: [],
+      feed,
+    }
+    FakeEventSource.last.onmessage({ data: JSON.stringify(snap) })
+  }
+  const feedObj = (human, pending = []) => ({
+    pending,
+    human,
+    tech: [],
+    techRaw: [],
+    techCount: 0,
+    unread: 0,
+    pendingCount: pending.length,
+  })
+  const dotOf = () => el.children.filter((c) => (c.className || '').includes('dmp-w-dot'))
+  // 比任何已读时间都新，保证被算成「没看」
+  const far = Date.now() + 86400000
+
+  // 18a. 只有 P2 未读 —— 红点不亮（P2 是「一轮完成」这类，不值得喊人）
+  push(feedObj([{ id: 'q2', seq: 401, at: far, kind: 'turnok', text: '【某会话】一轮完成', level: 2 }]))
+  const dotA = dotOf()
+  check('只有 P2 未读时红点不亮', dotA.length > 0 && dotA.every((d) => d.style.display === 'none'), (dotA[0] || {}).style && dotA[0].style.display)
+
+  // 18b. 有一条 P1 未读 —— 红点亮
+  push(
+    feedObj([
+      { id: 'q2', seq: 401, at: far, kind: 'turnok', text: '【某会话】一轮完成', level: 2 },
+      { id: 'q1', seq: 402, at: far, kind: 'retry', text: '【某个会话正在重试】正在重试（第 2 次）', level: 1 },
+    ]),
+  )
+  const dotB = dotOf()
+  check('有一条 P1 未读时红点亮', dotB.length > 0 && dotB.every((d) => d.style.display === 'block'), (dotB[0] || {}).style && dotB[0].style.display)
+
+  // 18c. 气泡正文里会话名只说一次（gate 的文案自带【名】，前端不能再补一遍）
+  push(feedObj([], [{ id: 'a18', seq: 903, at: Date.now(), text: '【重建产物】 正在请求授权…', name: '重建产物', level: 0 }]))
+  // 放掉上一次气泡占着的名额（bubbleBusy 是靠一个 timeout 释放的），多转两轮
+  for (let i = 0; i < 4; i += 1) {
+    runTimers('timeout')
+    await tick()
+  }
+  const bub18 = bubble.textContent || ''
+  const nameHits = bub18.split('重建产物').length - 1
+  check('气泡里会话名只出现一次', nameHits === 1, `${nameHits} 次：${bub18.slice(0, 70)}`)
+
+  // 18d. 三级卡片配色：P2 走灰、P0/P1 各自一色，源码里的 CSS 要两两不同
+  const css = fs.readFileSync(new URL('../src/widget.js', import.meta.url), 'utf8')
+  const grab = (sel) => {
+    const m = css.match(new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}'))
+    return m ? m[1] : ''
+  }
+  const bgOf = (lv) => (grab('.it.p' + lv).match(/background:([^;]+)/) || [])[1] || ''
+  const b0 = bgOf(0)
+  const b1 = bgOf(1)
+  const b2 = bgOf(2)
+  check('P0/P1/P2 三种卡片底色两两不同', Boolean(b0 && b1 && b2) && b0 !== b1 && b1 !== b2 && b0 !== b2, `${b0} / ${b1} / ${b2}`)
+  // P2 是灰的：hex 里 R/G/B 三通道差得不多
+  const hex = (b2.match(/#([0-9a-fA-F]{6})/) || [])[1] || ''
+  const ch = hex ? [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16)) : []
+  check('P2 卡片是灰调（三通道接近）', ch.length === 3 && Math.max(...ch) - Math.min(...ch) <= 24, `${b2} → ${ch.join(',')}`)
 }
 
 console.log(`\n${pass}/${total} 通过`)

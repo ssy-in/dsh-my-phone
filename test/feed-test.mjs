@@ -39,7 +39,7 @@ gate.noteConnect({ id: 'dev-1', label: '嘉然（iPhone）' }, 'Mozilla/5.0 (iPh
 const feed = gate.feed()
 check('feed 有 pending', Array.isArray(feed.pending) && feed.pending.length === 1, `len=${feed.pending.length}`)
 check('pending 里是授权文案', /正在请求授权/.test(feed.pending[0].text), feed.pending[0].text)
-check('pending 带会话名（不带中括号）', feed.pending[0].name === '整理插件的悬浮球', String(feed.pending[0].name))
+check('pending 带会话名（不带中括号，v1.8.38 起超过 6 字裁到「整理插件的悬…」）', feed.pending[0].name === '整理插件的悬…', String(feed.pending[0].name))
 check('feed 有 human', Array.isArray(feed.human) && feed.human.length === 3, `len=${feed.human.length}`)
 check('human 里有连接事件', feed.human.some((h) => h.kind === 'join' && /刚连进来/.test(h.text)))
 check('human 里有入口自动关闭', feed.human.some((h) => h.kind === 'autooff'))
@@ -109,6 +109,28 @@ check('技术动态没被高频人工事件挤掉', f4.tech.length >= 2, JSON.st
 check('新进来的技术事件也在', f4.tech.some((t) => t.kind === 'upstream'), JSON.stringify(f4.tech.map((t) => t.kind)))
 check('技术动态里没有「会话在等授权」这类误会', !f4.tech.some((t) => t.kind === 'approval'), JSON.stringify(f4.tech.map((t) => t.kind)))
 check('授权仍在 pending 里（没被藏掉）', f4.pending.length > 0, `n=${f4.pending.length}`)
+
+// 8. v1.8.37：「在等你回答」是唯一「卡着等你」的事件，要按 P0 处理。
+// 以前它不在 HUMAN_KINDS 里 → 落到技术动态、按 P2 走，提示音只有 2 声、气泡 3 秒就没了。
+gate.noteEvent('question', '【嘉然】 正在等你回答：要不要继续')
+const f5 = gate.feed()
+const q = f5.human.filter((x) => x.kind === 'question')
+check('「等你回答」进人工消息', q.length === 1, `n=${q.length}`)
+check('「等你回答」是 P0（和等授权同档）', q.every((x) => x.level === 0), q.map((x) => x.level).join(','))
+check('「等你回答」不再混进技术动态', !f5.tech.some((x) => x.kind === 'question'), JSON.stringify(f5.tech.map((x) => x.kind)))
+
+// 9. v1.8.38：入口自动关闭提到 P1；正文里的【会话名】超过 6 字统一裁成「六字…」。
+// 用户原话「入口自动关闭放到p1，会话名【六个字】里面就放六个字多的省略号」。
+gate.noteEvent('autooff', '【超长名字的一个会话】 入口空闲 15 分钟，已自动收回连接')
+const f6 = gate.feed()
+const off = f6.human.filter((x) => x.kind === 'autooff').pop()
+check('入口自动关闭是 P1', off.level === 1, `level=${off.level}`)
+check('正文里的长会话名被裁到 6 字 + 省略号', /【超长名字的一…】/.test(off.text), off.text)
+gate.noteEvent('retry', '【正好六个字】 正在重试（第 2 次）')
+const f7 = gate.feed()
+const six = f7.human.filter((x) => x.kind === 'retry').pop()
+check('短名字不会被加省略号', !/…/.test(six.text), six.text)
+check('裁的是名字不是整条文案（后面的正文还在）', /正在重试/.test(six.text), six.text)
 
 console.log(`\n${pass}/${pass + fail} 通过`)
 if (fail) process.exit(1)

@@ -35,8 +35,9 @@ gate.noteApproval('sess-1', '一个特别特别长的会话名字')
 let list = gate.pendingApprovals()
 check('同会话三次合并成一条', list.length === 1, `len=${list.length}`)
 check('计数累加到 3', list[0].count === 3, `count=${list[0].count}`)
-check('12 字以内不截断', list[0].text === '【一个特别特别长的会话名字】 正在请求授权...', list[0].text)
-check('行数据里带不带括号的会话名（前端上色用）', list[0].name === '一个特别特别长的会话名字', String(list[0].name))
+// v1.8.38：会话名裁到 6 个字（用户要「【六个字】里就放六个字，多的省略号」）
+check('超长会话名裁到 6 字 + 省略号', list[0].text === '【一个特别特别…】 正在请求授权...', list[0].text)
+check('行数据里带不带括号的会话名（前端上色用）', list[0].name === '一个特别特别…', String(list[0].name))
 // 中括号用【】（v1.2.1）：起始必须是【、名字后紧跟】
 check('文案用【】包住会话名', list[0].text.startsWith('【') && list[0].text.includes('】 正在请求授权'), list[0].text)
 
@@ -89,14 +90,19 @@ const renamed = gate4.pendingApprovals()[0]
 check('会话起名后就显示真名', renamed.name.startsWith('整理插件'), renamed.name)
 check('气泡文案也跟着换成真名', renamed.text.includes('整理插件'), renamed.text)
 
-// 4. 超过 12 字才截断（用户要「会话名的前几个字」）
+// 4. 超过 6 字才截断（v1.8.38：从 12 字收回到 6 字）
 gate.noteApproval('sess-long', '一个非常非常特别特别长的会话名字')
 const longList = gate.pendingApprovals()
 check(
-  '超过 12 字截断加省略号',
-  longList[longList.length - 1].name === '一个非常非常特别特别长的…',
+  '超过 6 字截断加省略号',
+  longList[longList.length - 1].name === '一个非常非常…',
   String(longList[longList.length - 1].name),
 )
+// 6 字以内原样保留，一个字都不动
+gate.noteApproval('sess-six', '正好六个字')
+const sixList = gate.pendingApprovals()
+const six = sixList[sixList.length - 1]
+check('6 字以内不截断', six.name === '正好六个字' && six.text === '【正好六个字】 正在请求授权...', six.text)
 
 console.log(`\n${pass}/${pass + fail} 通过`)
 process.exit(fail ? 1 : 0)

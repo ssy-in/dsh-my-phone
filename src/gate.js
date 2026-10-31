@@ -140,9 +140,15 @@ export function createGate({
 
   // 人要看的：入口/地址类 + 会话层面的「失败 / 重试 / 模型不可用」（v1.2.3）
   // 这两个集合以前定义在 buildFeed() 上方，可 note() 也要用，所以挪上来。
-  const HUMAN_KINDS = new Set(['tunnel', 'autooff', 'entry', 'turnfail', 'retry', 'model', 'longrun', 'ctx', 'turnok'])
+  const HUMAN_KINDS = new Set(['tunnel', 'autooff', 'entry', 'turnfail', 'retry', 'model', 'longrun', 'ctx', 'turnok', 'question'])
   // 其中这些是「值得留意」的 P1（橙色 + 感叹号），其余人工动态是 P2
-  const WARN_KINDS = new Set(['turnfail', 'retry', 'model', 'longrun', 'ctx'])
+  // v1.8.38：`autooff`（外网入口空闲自动关闭）提到 P1 —— 它意味着「外面已经连不进来了」，
+  // 按 P2 灰卡 + 一声轻响根本注意不到，用户会以为通道还开着。
+  const WARN_KINDS = new Set(['turnfail', 'retry', 'model', 'longrun', 'ctx', 'autooff'])
+  // v1.8.37：`question`（在等你回答）是唯一「卡在那儿等你」的事件，比 P1 更急 ——
+  // 以前它不在 HUMAN_KINDS 里，落到技术动态按 P2 处理，提示音只有 2 声、气泡 3 秒就没了，
+  // 跟「等你授权」完全不是一个待遇。现在归到 P0（5 声 + 气泡停 10 秒）。
+  const NEED_KINDS = new Set(['question'])
   // v1.8.30：这类只留排查日志，不进「消息」也不进「技术动态」。
   // 「会话在等授权」已经在 pending 里有一张带 id 的卡了，再在技术动态里出现一次
   // 既重复又误导（用户就是看到技术动态里有「会话在等授权」才问是不是出错了）。
@@ -180,10 +186,26 @@ export function createGate({
     }
   }
 
+  /**
+   * v1.8.38：把正文里【会话名】的文字裁到 6 个字。
+   *
+   * 用户要求「【六个字】里面就放六个字，多的省略号」—— 会话名动辄十几二十字，
+   * 手机气泡一行只放得下四五个字，名字就把正事挤到看不见了。
+   * 这里做在**唯一的入库口**（note()）上，所以 index.js 里几十条
+   * `【${title}】 …` 的文案、授权文案、技术动态全都会被统一裁掉，
+   * 不用逐个改，也不会漏。（只裁【】里的，正文一个字不动。）
+   */
+  const TAG_MAX = 6
+  function clipTags(text) {
+    return String(text == null ? '' : text).replace(/【([^】]*)】/g, (all, inner) =>
+      inner.length > TAG_MAX ? `【${inner.slice(0, TAG_MAX)}…】` : all,
+    )
+  }
+
   function note(kind, text) {
     // v1.2.0：事件带自增序号，前端要能稳定认「同一条」并做合并
     eventSeq += 1
-    const row = { seq: eventSeq, at: Date.now(), kind, text: String(text).slice(0, 240) }
+    const row = { seq: eventSeq, at: Date.now(), kind, text: clipTags(String(text).slice(0, 240)) }
     // 主环（排查日志 / 人工动态）只留 40 条
     events.push(row)
     if (events.length > 40) events.shift()
@@ -263,8 +285,10 @@ export function createGate({
     // v1.3.0：会话 id 形如 session-xxxx，前 6 位永远是「sessio」，绝不能当名字用
     let t = String(title || '').trim()
     if (!t || /^sessio/i.test(t) || /^[0-9a-f]{6,8}$/i.test(t)) t = '未命名会话'
-    // v1.1.18：从 5 字放宽到 12 字 —— 用户要「中括号里显示自己的会话名」，5 字全给截了
-    return t.length > 12 ? `${t.slice(0, 12)}…` : t
+    // v1.8.38：用户要「【六个字】里就放六个字，多的省略号」——
+    // 名字太长会把气泡正文挤到下一行、手机上一行只放得下四五个字。
+    // v1.1.18 那会儿从 5 字放宽到 12 字，现在收回到 6 字。
+    return t.length > 6 ? `${t.slice(0, 6)}…` : t
   }
   const approvalHead = (title, tool) => {
     const t = String(title || '').trim()
@@ -1563,7 +1587,7 @@ export function createGate({
           at: e.at,
           kind: e.kind,
           text: e.text,
-          level: WARN_KINDS.has(e.kind) ? 1 : 2,
+          level: NEED_KINDS.has(e.kind) ? 0 : WARN_KINDS.has(e.kind) ? 1 : 2,
         })
     human.sort((x, y) => y.at - x.at)
     // 技术日志按 kind 合并：一次域外扫描能刷出几十条 401，逐条列没意义。

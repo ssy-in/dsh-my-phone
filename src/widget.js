@@ -188,7 +188,6 @@ var bubbleBusyTimer = 0
   var TIMBRES = [
     ['bell', '风铃'],
     ['kalimba', '卡林巴'],
-    ['marimba', '马林巴'],
     ['water', '水滴'],
     ['pop', '气泡'],
     ['piano', '钢琴'],
@@ -528,19 +527,26 @@ var bubbleBusyTimer = 0
   }
 
   function unreadCount() {
-    // v1.8.29：手机上 data 永远是 null（只读快照在 remote 里）——原来这里直接
-    // `if (!data) return 0`，所以手机端的红点根本不看服务端的待处理数。
-    var src = data || remote
-    if (!src) return 0
-    if (typeof src.pendingCount === 'number' && src.pendingCount > 0) return src.pendingCount
-    if (src !== data) {
-      var rf = src.feed || {}
-      if (typeof rf.pendingCount === 'number' && rf.pendingCount > 0) return rf.pendingCount
-      return 0
-    }
+    // v1.8.38：用户要求「简单点，把所有没看的 P0/P1 都记上」。
+    // 以前只看服务端的 pendingCount（= 等授权张数），P0/P1 的普通消息
+    // （失败、重试、模型不可用、跑得有点久……）响完就没人记得了。
+    // 现在统一按「级别 ≤ P1 且发生在上次看过之后」来数：
+    //   - pending（等授权）永远算，它要人真去 DSH 里点，不能因为看过就消失；
+    //   - 其余按 feedSeen（打开「消息/日志」页时写的时间戳）判断，
+    //     所以 P2 不进红点，P0/P1 点开过就清。
     var feed = feedItems()
     var n = 0
-    for (var i = 0; i < feed.length; i++) if (feed[i] && feed[i].pending) n += 1
+    for (var i = 0; i < feed.length; i++) {
+      var it = feed[i]
+      if (!it) continue
+      if (it.pending) {
+        n += 1
+        continue
+      }
+      var lv = Number(it.level)
+      if (lv !== 0 && lv !== 1) continue
+      if ((Number(it.at) || 0) > feedSeen) n += 1
+    }
     return n
   }
 
@@ -565,6 +571,25 @@ var bubbleBusyTimer = 0
   // 正排队等授权的会话被彻底盖住：用户截图里明明在等老大授权，气泡却写
   // 「isis（iPhone）刚连进来」。未读通知会一直挂着，而授权是眼下真的在等人的事，
   // 所以授权必须排在最前面，且标签与文案必须说清「在等授权」。
+  // v1.8.38：把「正文开头的【会话名】」拆出来单独上色。
+  // 用户问过「为什么会有两个会话名字」—— 根因是 gate 的文案自带【名字】，
+  // 前端又无条件补了一个。现在两边统一走这里：名字只会出现一次，
+  // 而且【】里那一段永远跟着级别配色（P0 金 / P1 红 / P2 灰）。
+  function nameSpans(body, who, color) {
+    var out = []
+    var text = String(body || '')
+    var lead = text.match(/^【([^】]*)】\s*/)
+    if (lead) {
+      out.push({ t: '【' + lead[1] + '】', c: color })
+      var rest = text.slice(lead[0].length)
+      if (rest) out.push({ t: rest })
+      return out
+    }
+    if (who) out.push({ t: '【' + who + '】', c: color })
+    if (text) out.push({ t: text })
+    return out
+  }
+
   function bubbleCard() {
     // v1.8.30：手机端 data 为 null（快照在 remote），原来这里直接读 data →
     // 手机上永远走不到授权分支，只剩最底下那句「点一下 · 手机扫码连 DSH」。
@@ -574,7 +599,7 @@ var bubbleBusyTimer = 0
       var first = appr[appr.length - 1]
       return {
         tag: '等授权',
-        tagColor: '#C88A00',
+        tagColor: '#B8790A',
         meta: appr.length + ' 条',
         main: [{ t: String(first.text || '正在请求授权...') }],
         sign: '还有 ' + (appr.length - 1) + ' 条 · 点开消息看',
@@ -583,15 +608,12 @@ var bubbleBusyTimer = 0
     if (appr.length === 1) {
       var one = appr[0]
       var who = String(one.name || '').trim()
+      var body = String(one.text || '正在请求授权...')
+      // v1.8.38：统一走 nameSpans —— 名字只念一遍，且【】内那段上色
       return {
         tag: '等授权',
-        tagColor: '#C88A00',
-        main: who
-          ? [
-              { t: '【' + who + '】', c: '#C88A00' },
-              { t: '正在请求授权...' },
-            ]
-          : [{ t: String(one.text || '正在请求授权...') }],
+        tagColor: '#B8790A',
+        main: nameSpans(body, who, '#B8790A'),
         sign: '点一下看详情 · 在 DSH 里批准或拒绝',
       }
     }
@@ -680,12 +702,12 @@ var bubbleBusyTimer = 0
     var tag = it && it.pending
       ? '等授权'
       : known || (lv === 0 ? '要你决定' : lv === 1 ? '值得留意' : it && it.tech ? '技术动态' : '新消息')
-    var color = lv === 0 ? '#C88A00' : lv === 1 ? '#E06C00' : '#1a6fe0'
-    var main = []
+    // v1.8.38：与消息卡的三级配色对齐（P0 金 / P1 红 / P2 灰）
+    var color = lv === 0 ? '#B8790A' : lv === 1 ? '#CF3B2B' : '#7A8B98'
+    // v1.8.38：改成「拆一次、只念一遍」—— 统一交给 nameSpans
     var who = String((it && it.name) || '').trim()
-    // 待授权的消息把会话名放前面，让人一眼知道是哪条在等
-    if (who) main.push({ t: '【' + who + '】', c: color })
-    main.push({ t: String((it && it.text) || '') })
+    var body = String((it && it.text) || '')
+    var main = nameSpans(body, who, color)
     return {
       tag: tag,
       tagColor: color,
@@ -747,13 +769,13 @@ var bubbleBusyTimer = 0
     bubbleSig = sig
     bubble.textContent = ''
     bubble.style.cssText =
-      'position:fixed;z-index:2147483001;width:244px;padding:13px 17px 14px;border-radius:16px;' +
-      'background:#fff;border:1px solid rgba(26,111,224,.28);box-shadow:0 16px 38px rgba(6,24,36,.22);' +
-      'text-align:left;opacity:0;transform:translateY(-4px);transition:opacity .18s ease,transform .18s ease;pointer-events:none'
+      'position:fixed;z-index:2147483001;width:244px;padding:12px 16px 13px;border-radius:16px;' +
+      'background:#fff;border:1px solid rgba(26,111,224,.20);box-shadow:0 8px 22px rgba(6,24,36,.14);' +
+      'text-align:left;opacity:0;transform:translateY(-2px);transition:opacity .16s ease,transform .16s ease;pointer-events:none'
     // 尖角（朝球那侧）—— 放在哪个边、纵向落点都由 placeBubble() 决定
     var tail = document.createElement('span')
     tail.style.cssText =
-      'position:absolute;top:22px;width:9px;height:9px;background:#fff;border:1px solid rgba(26,111,224,.28);' +
+      'position:absolute;top:22px;width:9px;height:9px;background:#fff;border:1px solid rgba(26,111,224,.20);' +
       'transform:rotate(45deg)'
     bubble.appendChild(tail)
     bubbleTail = tail
@@ -808,6 +830,8 @@ var bubbleBusyTimer = 0
 
   // 把当前快照里所有「够格弹」的消息按时间正序摊出来
   function bubbleCandidates() {
+    // 技术类事件的级别：出问题了才给 P1（橙），其余一律 P2（青）。
+    var TECH_LEVEL = { error: 1, upstream: 1 }
     var out = []
     var list = feedItems()
     list = list.slice().sort(function (a, b) {
@@ -839,7 +863,10 @@ var bubbleBusyTimer = 0
         key: 't|' + String(t.kind || '') + '|' + String(t.text),
         at: t.at,
         kind: t.kind,
-        level: 2,
+        // v1.8.35：技术类事件以前一律按 P2（蓝色「新消息」）算 —— 于是「出错了」
+        // 「上游不通」这种真出问题的也弹成最不紧急的蓝色。这里按种类给真实级别：
+        // 出错/上游不通算 P1（橙色），其余技术动态仍是 P2。
+        level: TECH_LEVEL[t.kind] == null ? 2 : TECH_LEVEL[t.kind],
         pending: false,
         tech: true,
         text: t.text,
@@ -922,15 +949,24 @@ var bubbleBusyTimer = 0
     }
     var it = bubbleQueue.shift()
     bubbleBusy = true
-    var sticky = Boolean(it.pending)
+    // v1.8.35：只有**真的放出来**的才记成已播。以前在 autoBubble() 里一入队就
+    // 记成已播，可队列超过 3 条时会把早的先砍掉 —— 被砍掉的那几条永远弹不出来，
+    // 用户看到的效果就是「有的消息该弹却没弹」。
+    playedKeys[it.key] = Date.now()
+    // v1.8.36：所有会响声音的气泡都自动消失，只是按等级给不同的停留时长：
+    //   P0（等授权 / 在等你回答）10 秒、P1（值得留意）6 秒、P2（一般消息）3 秒。
+    // 以前 P0 是「常驻，必须手点一下才收起」，用户要求不再需要手点。
+    var lv = it.level == null ? 2 : Number(it.level)
+    if (!(lv >= 0) || lv > 2) lv = 2
+    var holdMs = lv <= 0 ? 10000 : lv === 1 ? 6000 : 3000
     lastShownIt = it
-    showBubble(sticky ? 0 : 4500, cardFor(it))
-    playLevel(sticky ? 0 : it.level == null ? 2 : it.level)
+    showBubble(holdMs, cardFor(it))
+    playLevel(lv)
     bubbleBusyTimer = setTimeout(function () {
       bubbleBusy = false
       if (bubbleQueue.length) hideBubble()
       pumpBubble()
-    }, sticky ? 5200 : BUBBLE_GAP + 2600)
+    }, holdMs + BUBBLE_GAP)
   }
 
   function autoBubble() {
@@ -958,7 +994,6 @@ var bubbleBusyTimer = 0
       // （以前这里写的是「45 秒内不重复」，可列表里的旧消息过了 45 秒
       // 又会被当成新的，于是隔一阵就重弹一遍「已经弹过的」气泡。）
       if (Number(playedKeys[c.key] || 0)) continue
-      playedKeys[c.key] = now
       fresh.push(c)
     }
     if (!fresh.length) return
@@ -969,8 +1004,17 @@ var bubbleBusyTimer = 0
       if (inQueue[fresh[m].key]) continue
       bubbleQueue.push(fresh[m])
     }
-    // 队列太长就不排了：只保留最后 3 条，避免一次刷屏几十张卡
-    if (bubbleQueue.length > 3) bubbleQueue = bubbleQueue.slice(-3)
+    // 一次涌进来太多（比如手机刚连上补了一屏历史）时不能全排 —— 最多留 8 条。
+    // v1.8.35：以前是 `slice(-3)` 直接截断，被截掉的那几条**没有记成已播**，
+    // 下一轮又被当成新消息塞回来，于是队列永远在溢出、老是那几条在轮，别的永远轮不到。
+    // 现在超出部分按「最老的先放弃」逐条摘掉并记成已播：既不无限刷屏，也不会互相饿死。
+    if (bubbleQueue.length > 8) {
+      var dropN = bubbleQueue.length - 8
+      for (var dq = 0; dq < dropN; dq++) {
+        var gone = bubbleQueue.shift()
+        if (gone) playedKeys[gone.key] = now
+      }
+    }
     pumpBubble()
   }
 
@@ -1057,8 +1101,7 @@ var bubbleBusyTimer = 0
     if (dot) {
       var n = unreadCount()
       if (n > 0) {
-        dot.style.display = 'flex'
-        dot.textContent = n > 99 ? '99+' : String(n)
+        dot.style.display = 'block'
       } else {
         dot.style.display = 'none'
       }
@@ -1236,20 +1279,18 @@ var bubbleBusyTimer = 0
 
     dot = document.createElement('span')
     dot.className = 'dmp-w-dot'
+    // v1.8.36：红点缩小、不带数字，只要「有未读」就亮一颗会呼吸的小点
+    // （原来的 17px 胶囊里塞数字，一动就一大一小，比球本身还抢眼）。
     dot.style.cssText = [
       'position:absolute',
-      'top:-3px',
-      'right:-3px',
-      'min-width:17px',
-      'height:17px',
-      'padding:0 5px',
+      'top:-2px',
+      'right:-2px',
+      'width:9px',
+      'height:9px',
       'border-radius:999px',
       'background:#e6382b',
-      'color:#fff',
-      'font:800 10.5px/17px system-ui,-apple-system,"PingFang SC",sans-serif',
-      'text-align:center',
       'display:none',
-      'box-shadow:0 1px 4px rgba(180,20,10,.3)',
+      'box-shadow:0 0 0 2px rgba(255,255,255,.92)',
       'pointer-events:none',
     ].join(';')
     el.appendChild(dot)
@@ -1278,7 +1319,7 @@ var bubbleBusyTimer = 0
       clearTimeout(hoverTimer)
       hoverTimer = setTimeout(function () {
         // 有「最后一条消息」就重画它，否则才用兜底文案（v1.8.22）
-        if (lastShownIt) showBubble(0, cardFor(lastShownIt))
+        if (lastShownIt) showBubble(8000, cardFor(lastShownIt))
         else showBubble()
       }, 300)
     })
@@ -1477,8 +1518,11 @@ var bubbleBusyTimer = 0
       '#dmp-panel *::-webkit-scrollbar-track{background:transparent}',
       // v1.8.28：红点缩小，动效改成「若隐若现」——原来是戳出去的阴影圈（像在闪），
       // 现在改成整颗球自己的透明度轻微呼吸，安静很多。
-      '#dmp-w-dot{animation:dmp-breathe 2.6s ease-in-out infinite}',
-      '@keyframes dmp-breathe{0%,100%{opacity:1}50%{opacity:.42}}',
+      // v1.8.36：红点不再带数字，改成「一会大一会小」的缓慢脉冲（1.6s 一轮，
+      // 幅度压得很小 0.86↔1.18），安静但有生命感，不抢球的位置。
+      '#dmp-w-dot{animation:dmp-breathe 2.6s ease-in-out infinite,dmp-dotpulse 1.6s ease-in-out infinite}',
+      '@keyframes dmp-breathe{0%,100%{opacity:1}50%{opacity:.72}}',
+      '@keyframes dmp-dotpulse{0%,100%{transform:scale(.86)}50%{transform:scale(1.18)}}',
       '@media (prefers-reduced-motion: reduce){#dmp-w-dot{animation:none}}',
       '#dmp-panel input[type=range]{-webkit-appearance:none;appearance:none;height:18px;background:transparent;cursor:pointer}',
       '#dmp-panel input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:999px;background:linear-gradient(90deg,#40d0d0,#0b7f8c)}',
@@ -1497,24 +1541,26 @@ var bubbleBusyTimer = 0
       // v1.8.22：把旧的左侧 3px 色条加回来。旧版写的是 left:0;top:8px;bottom:8px，卡片有 12px 圆角时
       // 色条会从圆角外面露出来 —— 看着像「错位」。现在让色条内缩进圆角里、上下各留 9px，两端都圆。
       '#dmp-panel .feed .it::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:#cfe3ee}',
-      '#dmp-panel .feed .it.p0::before{background:#c88a00}',
-      '#dmp-panel .feed .it.p1::before{background:#e06c00}',
-      '#dmp-panel .feed .it.p2::before{background:#1a6fe0}',
+      '#dmp-panel .feed .it.p0::before{background:#b8790a}',
+      '#dmp-panel .feed .it.p1::before{background:#cf3b2b}',
+      '#dmp-panel .feed .it.p2::before{background:#8a9aa6}',
       '#dmp-panel .feed .it .top{display:flex;align-items:center;gap:6px;min-height:16px;line-height:1}',
       // v1.8.26：左上角的事件标签就是一列带色的小标题，不要胶囊背景（用户要求）
       '#dmp-panel .feed .it .tag{display:inline-block;height:auto;padding:0;border-radius:0;background:none;font:800 11px/1.2 system-ui;letter-spacing:.02em;color:#1a6fe0}',
-      '#dmp-panel .feed .it .tag.t0{color:#a86f00}',
-      '#dmp-panel .feed .it .tag.t1{color:#c85a00}',
-      '#dmp-panel .feed .it .tag.t2{color:#1a6fe0}',
-      '#dmp-panel .feed .it .new{display:inline-flex;align-items:center;height:15px;padding:0 6px;border-radius:999px;font:800 9px/1 system-ui;letter-spacing:.1em;color:#fff;background:#1a6fe0}',
+      '#dmp-panel .feed .it .tag.t0{color:#9d6600}',
+      '#dmp-panel .feed .it .tag.t1{color:#b8301f}',
+      '#dmp-panel .feed .it .tag.t2{color:#6b7c8a}',
+      '#dmp-panel .feed .it .new{display:inline-flex;align-items:center;height:15px;padding:0 6px;border-radius:999px;font:800 9px/1 system-ui;letter-spacing:.1em;color:#fff;background:#8a9aa6}',
       '#dmp-panel .feed .it .tx{margin:5px 0 0;font:600 12.5px/1.5 system-ui;color:var(--ink);word-break:break-word}',
       '#dmp-panel .feed .it .tm{margin:4px 0 0;text-align:right;font:400 10.5px/1.4 ui-monospace,Menlo,monospace;color:var(--ink3);font-variant-numeric:tabular-nums}',
-      '#dmp-panel .feed .it.p0{background:#fffcf2;border-color:#f0e0b8}',
-      '#dmp-panel .feed .it.p0 .new{background:#c88a00}',
-      '#dmp-panel .feed .it.p1{background:#fff8f2;border-color:#f6d8c0}',
-      '#dmp-panel .feed .it.p1 .new{background:#e06c00}',
-      '#dmp-panel .feed .it.p2{background:#f8fbfe;border-color:#daeaf6}',
-      '#dmp-panel .feed .it.p2 .new{background:#1a6fe0}',
+      // v1.8.38：三级配色重新拉开 —— 原来 P0 金 #c88a00 / P1 橙 #e06c00 只差一口气，
+      // 一眼分不出哪个更要紧。现在 P0 金、P1 红、P2 灰（普通消息不该抢注意力）。
+      '#dmp-panel .feed .it.p0{background:#fff9ec;border-color:#ecd092}',
+      '#dmp-panel .feed .it.p0 .new{background:#b8790a}',
+      '#dmp-panel .feed .it.p1{background:#fff5f2;border-color:#f3c6bc}',
+      '#dmp-panel .feed .it.p1 .new{background:#cf3b2b}',
+      '#dmp-panel .feed .it.p2{background:#f6f8fa;border-color:#e1e7ec}',
+      '#dmp-panel .feed .it.p2 .new{background:#8a9aa6}',
       // 技术动态：只记录、不弹气泡，做成一行一条的浅色小字
       '#dmp-panel .dmp-tech{display:flex;flex-direction:column;gap:5px;margin:2px 0 0}',
       '#dmp-panel .dmp-tech .titem{display:flex;align-items:baseline;gap:8px;padding:6px 10px;border-radius:9px;background:#f7fafc;border:1px solid #e6eff5}',
