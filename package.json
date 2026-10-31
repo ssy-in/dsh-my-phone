@@ -1,6 +1,6 @@
 {
   "name": "dsh-my-phone",
-  "version": "1.5.1",
+  "version": "1.6.8",
   "description": "在手机上继续用电脑上的 DeepSeek Harness —— 扫一次码，出门也能连回家里的会话。",
   "type": "module",
   "main": "src/index.js",

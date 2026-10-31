@@ -26,6 +26,8 @@ const ICON_FAB_PATH = new URL('../icon-tight.png', import.meta.url)
 // 悬浮球脚本按 mtime 缓存：改完 widget.js 刷页面就生效，不用重启宿主
 const WIDGET_PATH = new URL('./widget.js', import.meta.url)
 let widgetCache = { text: '', mtimeMs: 0 }
+const AUDIO_PATH = new URL('./audio.js', import.meta.url)
+let audioCache = { text: '', mtimeMs: 0 }
 /** 这次进程是什么时候起来的：前端靠它判断「DSH 重启了，该弹一次引导气泡」。 */
 const STARTED_AT = Date.now()
 
@@ -199,6 +201,24 @@ export function registerPanel(ctx, { state, gate, getAddresses, getQrBase = null
         } catch (err) {
           res.writeHead(404, {'content-type': 'text/plain; charset=utf-8'})
           res.end('widget.js not found')
+        }
+      },
+    },
+    {
+      // 音效引擎（v1.6.0 从 client.js 搬出来）：widget.js 会先拉它再拉自己，纯 DOM 也能出声。
+      kind: 'exact',
+      path: '/__myphone/audio.js',
+      handler: (req, res) => {
+        try {
+          const st = statSync(AUDIO_PATH)
+          if (!audioCache.text || audioCache.mtimeMs !== st.mtimeMs) {
+            audioCache = { text: readFileSync(AUDIO_PATH, 'utf8'), mtimeMs: st.mtimeMs }
+          }
+          res.writeHead(200, {'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store'})
+          res.end(audioCache.text)
+        } catch (err) {
+          res.writeHead(404, {'content-type': 'text/plain; charset=utf-8'})
+          res.end('audio.js not found')
         }
       },
     },

@@ -30,6 +30,14 @@ check(
 check('纯 DOM 球就位后让 React 球让位（dmp-widget-on）', src.includes("classList.add('dmp-widget-on')"))
 check('连接页两行文案与「生成二维码」按钮在 DOM 版里', src.includes('相机或者浏览器扫码连接') && src.includes('生成二维码'))
 
+const audioSrc = fs.readFileSync(new URL('../src/audio.js', import.meta.url), 'utf8')
+check('音效引擎已抽成独立脚本', audioSrc.includes('window.__dshMyPhoneAudio') && audioSrc.includes('setVolume('))
+check('音效引擎带三档事件音', /alert\(\)/.test(audioSrc) && /notice\(\)/.test(audioSrc) && /short\(\)/.test(audioSrc))
+check('widget 会去拉 audio.js', src.includes("'/__myphone/audio.js'"))
+check('默认位置：右上角、往下让一个图标高', src.includes('function defaultAnchor()') && src.includes('H * 1.5'))
+check('手机退到只读快照', src.includes("'/__myphone/state'") && src.includes('手机上是只读视图'))
+check('音效设置（开关/音量/音色）在 DOM 面板里', src.includes('function soundRows()') && src.includes("SOUND_KEY = 'dsh-my-phone.sound.v2'"))
+
 // ---------- 2. 运行时：管理口 Host / Origin 白名单 ----------
 const PORT = 18097
 const state = {

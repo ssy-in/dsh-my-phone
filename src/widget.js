@@ -15,6 +15,11 @@
   window.__dshMyPhoneWidget = true
 
   // 尺寸：跟旧版 React 球一致（宽 135、按紧裁图标比例 512×459 得高约 121）
+  // v1.6.1 临时开关：true = 用纯 DOM 球与纯 DOM 弹窗（v1.5.0 那套）；
+  // false = 交回 React 那套（用户说的「原来的界面」）。
+  // 现在用户要把旧界面调出来做逐项对照，所以默认 false。改回 true 只需动这一行。
+  var USE_DOM_UI = true
+
   var TILE = 135
   var RATIO = 459 / 512
   var W = TILE
@@ -23,10 +28,21 @@
   var ICON = '/__myphone/icon-fab.png?v=3'
   var API = '/__myphone/panel'
   var ROT = { bottom: 0, right: -90, top: 180, left: 90 }
-  var DEFAULT = { xp: 0.94, yp: 0.17, edge: 'right' }
+  // 默认位置（用户指定）：右上角、往下让出一个图标的高度，右侧吸住。
+  // 用视口比例存，所以窗口缩放后还是那个相对位置。
+  function defaultAnchor() {
+    return {
+      xp: 1 - W / 2 / Math.max(1, vw()),
+      yp: (H * 1.5) / Math.max(1, vh()),
+      edge: 'right',
+    }
+  }
 
-  var state = { xp: DEFAULT.xp, yp: DEFAULT.yp, edge: DEFAULT.edge }
+  var state = null
   var data = null
+  var remote = null // 手机上拿到的是只读快照（/__myphone/state）
+  var lastFeedAt = 0
+  var lastPending = 0
   var el = null
   var dot = null
   var bubble = null
@@ -38,6 +54,7 @@
 
   // ---------- 位置 ----------
   function load() {
+    state = defaultAnchor()
     try {
       var raw = window.localStorage && window.localStorage.getItem(KEY)
       if (!raw) return
@@ -78,6 +95,153 @@
     el.style.top = Math.round(y) + 'px'
     el.style.rotate = (ROT[state.edge] || 0) + 'deg'
     if (dot) dot.style.rotate = -(ROT[state.edge] || 0) + 'deg'
+  }
+
+    // ---------- 音效设置 ----------
+  // 键沿用旧版：dsh-my-phone.sound.v2 = { on:{join,msg,approval}, volume, timbre }
+  var SOUND_KEY = 'dsh-my-phone.sound.v2'
+  var TIMBRES = [
+    ['bell', '风铃'],
+    ['kalimba', '卡林巴'],
+    ['marimba', '马林巴'],
+    ['water', '水滴'],
+    ['pop', '气泡'],
+    ['piano', '钢琴'],
+    ['violin', '小提琴'],
+  ]
+  function sound() {
+    var def = { on: { join: true, msg: true, approval: true }, volume: 100, timbre: 'bell' }
+    try {
+      var raw = window.localStorage && window.localStorage.getItem(SOUND_KEY)
+      if (!raw) return def
+      var j = JSON.parse(raw) || {}
+      return {
+        on: Object.assign(def.on, j.on || {}),
+        volume: typeof j.volume === 'number' ? j.volume : def.volume,
+        timbre: TIMBRES.some(function (x) {
+          return x[0] === j.timbre
+        })
+          ? j.timbre
+          : def.timbre,
+      }
+    } catch (e) {
+      return def
+    }
+  }
+  function saveSound(next) {
+    try {
+      window.localStorage && window.localStorage.setItem(SOUND_KEY, JSON.stringify(next))
+    } catch (e) {
+      /* 存不了就只在本次会话生效 */
+    }
+    var eng = window.__dshMyPhoneAudio
+    if (eng) {
+      try {
+        eng.setVolume(next.volume)
+        eng.setTimbre(next.timbre)
+      } catch (e) {
+        /* 引擎没准备好就算了 */
+      }
+    }
+  }
+  function playLevel(level) {
+    var eng = window.__dshMyPhoneAudio
+    if (!eng) return
+    var s = sound()
+    var ok = level === 0 ? s.on.approval : level === 1 ? s.on.join : s.on.msg
+    if (!ok) return
+    try {
+      eng.setVolume(s.volume)
+      eng.setTimbre(s.timbre)
+      if (level === 0) eng.alert()
+      else if (level === 2) eng.short()
+      else eng.notice()
+    } catch (e) {
+      /* 忽略 */
+    }
+  }
+
+  function soundRows() {
+    var s = sound()
+    var out = []
+    var seg = h('div', { class: 'seg' })
+    ;[
+      ['approval', '等待授权'],
+      ['join', '有人连入'],
+      ['msg', '新消息'],
+    ].forEach(function (kv) {
+      seg.appendChild(
+        h('button', {
+          class: s.on[kv[0]] ? 'on' : '',
+          text: (s.on[kv[0]] ? '🔔 ' : '🔇 ') + kv[1],
+          onclick: function () {
+            var n = sound()
+            n.on[kv[0]] = !n.on[kv[0]]
+            saveSound(n)
+            if (n.on[kv[0]]) playLevel(kv[0] === 'approval' ? 0 : kv[0] === 'join' ? 1 : 2)
+            render()
+          },
+        }),
+      )
+    })
+    out.push(h('div', { style: 'padding:6px 0 10px' }, [seg]))
+
+    var vol = h('input', { type: 'range', min: '0', max: '100', value: String(s.volume), style: 'flex:1;min-width:0' })
+    var volTxt = h('span', {
+      style: 'width:44px;text-align:right;font:700 12px/1 ui-monospace,Menlo,monospace;color:#0a5f75',
+      text: s.volume + '%',
+    })
+    vol.addEventListener('input', function (ev) {
+      volTxt.textContent = ev.target.value + '%'
+      var n = sound()
+      n.volume = Number(ev.target.value)
+      saveSound(n)
+    })
+    vol.addEventListener('change', function () {
+      playLevel(2)
+    })
+    out.push(
+      h('div', { class: 'row' }, [
+        h('div', { style: 'font-size:12.5px;color:#43606f;width:34px', text: '音量' }),
+        vol,
+        volTxt,
+      ]),
+    )
+
+    var sel = h('select', {
+      style: 'flex:1;min-width:0;border:1px solid #cfe4ec;border-radius:8px;padding:6px 8px;font:12.5px/1.4 inherit;color:#0d2130;background:#fff',
+    })
+    TIMBRES.forEach(function (kv) {
+      var op = document.createElement('option')
+      op.value = kv[0]
+      op.textContent = kv[1]
+      if (kv[0] === s.timbre) op.selected = true
+      sel.appendChild(op)
+    })
+    sel.addEventListener('change', function (ev) {
+      var n = sound()
+      n.timbre = ev.target.value
+      saveSound(n)
+      var eng = window.__dshMyPhoneAudio
+      if (eng) {
+        try {
+          eng.setTimbre(n.timbre)
+          eng.preview(n.timbre)
+        } catch (e) {
+          /* 忽略 */
+        }
+      }
+    })
+    out.push(
+      h('div', { class: 'row' }, [
+        h('div', { style: 'font-size:12.5px;color:#43606f;width:34px', text: '音色' }),
+        sel,
+      ]),
+    )
+    out.push(
+      h('div', { class: 'dmp-hint', text: '只是提示音，不影响连接。第一次点过页面之后才会有声音（浏览器要求）。' }),
+    )
+    return out
   }
 
   // ---------- 数据 ----------
@@ -138,19 +302,56 @@
         })
         .then(function (json) {
           if (!json) return
+          remote = null // 管理口又能连上了：回到本地可写模式
           data = json
           paint()
           if (panel && panel.isOpen()) panel.render()
         })
         .catch(function () {
-          /* 离线/管理口不可达：保持现状 */
+          loadRemote()
         })
     } catch (e) {
       /* 老浏览器没有 fetch 就算了，球照样能点 */
     }
   }
 
+  // 手机上管理口（127.0.0.1）够不着：退到只读快照，至少能看「连没连上 / 共几台 / 消息」
+  function loadRemote() {
+    try {
+      fetch('/__myphone/state', { credentials: 'same-origin' })
+        .then(function (r) {
+          return r && r.ok ? r.json() : null
+        })
+        .then(function (json) {
+          if (!json || !json.device) return
+          remote = json
+          data = null
+          if (panel && panel.isOpen()) panel.render()
+        })
+        .catch(function () {
+          /* 连只读口都拿不到：多半是凭据失效，面板会提示重新扫码 */
+        })
+    } catch (e) {
+      /* 忽略 */
+    }
+  }
+
   function paint() {
+    // 提示音：有新消息（更靠前的一条）就响；同一时刻只响一次
+    try {
+      var feed = data && Array.isArray(data.feed) ? data.feed : []
+      var newestAt = feed.length ? Number(feed[0].at) || 0 : 0
+      var pendingNow = unreadCount()
+      if (newestAt && newestAt > lastFeedAt) {
+        if (lastFeedAt) playLevel(Number(feed[0].level) || 2)
+      } else if (pendingNow > lastPending && lastPending >= 0) {
+        playLevel(0)
+      }
+      lastFeedAt = newestAt || lastFeedAt
+      lastPending = pendingNow
+    } catch (e) {
+      /* 响不了不影响功能 */
+    }
     if (dot) {
       var n = unreadCount()
       if (n > 0) {
@@ -213,6 +414,12 @@
     }
     // React 立刻接走了：这次就交给它，避免两套面板叠在一起
     if (window.__dshMyPhoneOpened) return
+    if (!panel) panel = createPanel()
+    panel.open()
+  }
+
+  // 只开 DOM 面板：不碰 React（React 那套在这个宿主里会被清掉，专门留给对比截图用）
+  function openPanelDomOnly() {
     if (!panel) panel = createPanel()
     panel.open()
   }
@@ -281,7 +488,7 @@
   }
 
   function resetPos() {
-    state = { xp: DEFAULT.xp, yp: DEFAULT.yp, edge: DEFAULT.edge }
+    state = defaultAnchor()
     save()
     applyPos()
   }
@@ -361,15 +568,28 @@
         suppressClick = false
         return
       }
-      openPanel()
+      openPanelDomOnly()
     })
     el.addEventListener('keydown', function (ev) {
       if (ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault()
-        openPanel()
+        openPanelDomOnly()
       }
     })
     window.addEventListener('resize', applyPos)
+
+    // 音效引擎由独立脚本提供（src/audio.js）：先拉它，拉到就能出声，拉不到就静音跑
+    try {
+      if (!document.getElementById('dmp-audio-js')) {
+        var ajs = document.createElement('script')
+        ajs.id = 'dmp-audio-js'
+        ajs.src = '/__myphone/audio.js'
+        ajs.async = true
+        document.documentElement.appendChild(ajs)
+      }
+    } catch (e) {
+      /* 拉不到就算了，不影响功能 */
+    }
 
     // 纯 DOM 球就位后，让 React 那颗球让位（client.js 的 .dmp-widget-on .dmp-wrap{display:none}）
     try {
@@ -592,6 +812,39 @@
 
     function connectPane() {
       var out = []
+      if (remote) {
+        var d = remote.device || {}
+        out.push(h('p', { class: 'dmp-lead', text: '这台手机已连上这台电脑' }))
+        out.push(
+          h('p', {
+            class: 'dmp-sub',
+            text: (d.note ? d.note + '（' + d.label + '）' : d.label || '设备') + (d.trusted ? ' · 已信任' : ' · 未信任'),
+          }),
+        )
+        out.push(h('div', { class: 'dmp-hint', text: '手机上是只读视图：开关、配对都在电脑上的悬浮球里操作。' }))
+        out.push(
+          h('div', { class: 'dmp-link' }, [
+            h('code', { text: String(location.href) }),
+            h('button', {
+              class: 'mini',
+              text: '复制',
+              onclick: function () {
+                copyText(String(location.href))
+              },
+            }),
+          ]),
+        )
+        out.push(
+          h('button', {
+            class: 'primary',
+            text: '继续使用 DSH',
+            onclick: function () {
+              close()
+            },
+          }),
+        )
+        return out
+      }
       out.push(h('p', { class: 'dmp-lead', text: '相机或者浏览器扫码连接' }))
       out.push(h('p', { class: 'dmp-sub', text: '扫码连接 DeepSeek Harness 桌面版' }))
       out.push(qrBlock())
@@ -673,6 +926,8 @@
         seg,
       ])
     }
+
+
 
     // Electron 里 window.prompt / confirm 是被禁的（调用会直接抛错），所以备注用行内输入、
     // 删除用「再点一次」确认，全部自己画。
@@ -837,6 +1092,21 @@
         head.appendChild(
           h('button', {
             class: 'mini',
+            text: '复制日志',
+            onclick: function () {
+              var list = data && Array.isArray(data.events) ? data.events : []
+              var txt = list
+                .map(function (e) {
+                  return hhmm(e.at) + ' ' + (e.kind || '') + ' ' + (e.text || '')
+                })
+                .join('\n')
+              copyText(txt || '（还没有日志）')
+            },
+          }),
+        )
+        head.appendChild(
+          h('button', {
+            class: 'mini',
             text: '清空',
             onclick: function () {
               post('clear', {})
@@ -857,10 +1127,71 @@
     }
 
     function advancedPane() {
+      if (remote) {
+        var rOut = []
+        var dev = remote.device || {}
+        rOut.push(h('h4', { text: '这台设备' }))
+        rOut.push(
+          h('div', { class: 'row' }, [
+            h('div', { class: 'grow' }, [
+              h('div', { class: 'name', text: (dev.note ? dev.note + '（' + dev.label + '）' : dev.label) || '设备' }),
+              h('div', { class: 'meta', text: (dev.trusted ? '已信任' : '未信任') + (dev.lastSeen ? ' · 最近 ' + hhmm(dev.lastSeen) : '') }),
+            ]),
+          ]),
+        )
+        rOut.push(h('div', { class: 'dmp-hint', text: '这台电脑上一共 ' + (remote.devices || 0) + ' 台设备连着。' }))
+        rOut.push(h('h4', { text: '消息' }))
+        var evs = Array.isArray(remote.events) ? remote.events.slice(-8).reverse() : []
+        if (!evs.length) rOut.push(h('div', { class: 'dmp-hint', text: '暂时没有新消息。' }))
+        evs.forEach(function (e) {
+          rOut.push(
+            h('div', { class: 'feed' }, [
+              h('div', { class: 'tx', text: e.text || '' }),
+              h('div', { class: 'tm', text: hhmm(e.at) + ' · ' + (e.kind || '') }),
+            ]),
+          )
+        })
+        return rOut
+      }
       var s = (data && data.settings) || {}
       var lan = Boolean(data && data.lanEnabled)
       var tun = Boolean(data && data.tunnelEnabled)
       var out = []
+      out.push(h('h4', { text: '旧界面（截图用）' }))
+      out.push(
+        h('div', { class: 'row' }, [
+          h('div', { class: 'grow' }, [h('div', { class: 'meta', text: '打开 React 版弹窗做对比截图' })]),
+          h('button', {
+            class: 'mini',
+            text: '打开',
+            onclick: function (ev) {
+              var host = null
+              try {
+                host = ev && ev.currentTarget && ev.currentTarget.parentNode && ev.currentTarget.parentNode.parentNode
+              } catch (e) {
+                host = null
+              }
+              var box = document.createElement('div')
+              box.setAttribute('data-legacy', '1')
+              box.style.cssText = 'position:relative;width:0;height:0'
+              if (host) host.appendChild(box)
+              var ok = false
+              try {
+                ok = typeof window.__dshMyPhoneMountLegacy === 'function' && window.__dshMyPhoneMountLegacy(box)
+              } catch (e) {
+                ok = false
+              }
+              if (!ok) {
+                try {
+                  window.dispatchEvent(new CustomEvent('dsh-my-phone:open'))
+                } catch (e) {
+                  /* 忽略 */
+                }
+              }
+            },
+          }),
+        ]),
+      )
       out.push(h('h4', { text: '入口' }))
       out.push(
         switchRow('局域网访问', lan ? '同一 Wi-Fi 下可用，不经第三方' : '关着（默认只用外网，一个码到处都能用）', lan, function () {
@@ -881,6 +1212,10 @@
       })
       out.push(h('h4', { text: '已配对设备' }))
       deviceRows().forEach(function (n) {
+        out.push(n)
+      })
+      out.push(h('h4', { text: '音效' }))
+      soundRows().forEach(function (n) {
         out.push(n)
       })
       out.push(h('h4', { text: '免打扰' }))
@@ -947,11 +1282,94 @@
     }
   }
 
+
+// ---------- 纯色测试按钮（v1.6.5：把每一步都报到服务端，点不动也能查） ----------
+  function probeReport(stage, detail) {
+    try {
+      var body = JSON.stringify({
+        stage: String(stage || '').slice(0, 24),
+        detail: String(detail || '').slice(0, 150),
+        w: window.innerWidth,
+        h: window.innerHeight,
+        dpr: window.devicePixelRatio || 1,
+      })
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/__myphone/client-report', new Blob([body], { type: 'application/json' }))
+      } else {
+        void fetch('/__myphone/client-report', { method: 'POST', body: body, headers: { 'content-type': 'application/json' } })
+      }
+    } catch (e) {
+      /* 信标失败无所谓 */
+    }
+  }
+
+  function mountProbe() {
+    try {
+      var d = document.getElementById('dmp-probe')
+      if (d && document.contains(d)) return
+      d = document.createElement('button')
+      d.id = 'dmp-probe'
+      d.type = 'button'
+      d.textContent = '测试按钮 · 点我开面板'
+      d.style.cssText = [
+        'position:fixed', 'left:50%', 'top:10px', 'transform:translateX(-50%)',
+        'z-index:2147483647', 'background:#e11d48', 'color:#fff', 'border:0',
+        'border-radius:10px', 'padding:12px 18px', 'font:700 14px/1.2 system-ui,sans-serif',
+        'box-shadow:0 6px 18px rgba(225,29,72,.45)', 'cursor:pointer', 'max-width:86vw',
+      ].join(';')
+
+      var fired = false
+      var go = function (how) {
+        if (fired) return
+        fired = true
+        d.style.background = '#1f6feb'
+        d.textContent = '收到' + how + '…正在开'
+        probeReport('probe-down', how)
+        setTimeout(function () {
+          try {
+            openPanelDomOnly()
+            d.style.background = '#0a7a4b'
+            d.textContent = '已点开 · ' + new Date().toLocaleTimeString()
+            probeReport('probe-open-ok', 'panel=' + Boolean(panel))
+          } catch (e) {
+            var msg = (e && (e.message || String(e))) || '未知错误'
+            d.style.background = '#7f1d1d'
+            d.textContent = '报错：' + msg
+            probeReport('probe-open-err', msg)
+          }
+        }, 40)
+      }
+
+      d.addEventListener('pointerdown', function (ev) { try { ev.stopPropagation() } catch (e) {} go('按下') }, true)
+      d.addEventListener('click', function (ev) { try { ev.stopPropagation() } catch (e) {} go('点击') }, true)
+      d.addEventListener('touchend', function (ev) { try { ev.stopPropagation() } catch (e) {} go('触摸') }, true)
+      ;(document.body || document.documentElement).appendChild(d)
+
+      // 全页监听：确认点击事件到底有没有送到页面（用户点不动时靠这条查）
+      if (!window.__dmpProbeDoc) {
+        window.__dmpProbeDoc = true
+        window.addEventListener(
+          'pointerdown',
+          function (ev) {
+            var tgt = ev.target || {}
+            probeReport('probe-doc-down', (tgt.id || tgt.tagName || '?') + ' @' + Math.round(ev.clientX) + ',' + Math.round(ev.clientY))
+          },
+          true,
+        )
+      }
+    } catch (e) {
+      /* 不要抛到宿主 */
+    }
+  }
+
+  mountProbe()
+
   // ---------- 常驻看护 ----------
   function ensure() {
     try {
       if (!document.documentElement) return
       if (!el || !document.contains(el)) mount()
+      mountProbe()
     } catch (e) {
       /* 极端情况下不要抛到宿主 */
     }
@@ -965,6 +1383,8 @@
     bubble.style.top = Math.round(Math.min(Math.max(8, r.top + H / 2 - 18), vh() - 70)) + 'px'
   }
   setInterval(placeBubble, 400)
+
+  if (!USE_DOM_UI) return // 暂停纯 DOM UI：这次先让 React 那套界面出场
 
   ensure()
   boot()
