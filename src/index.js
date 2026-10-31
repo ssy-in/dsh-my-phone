@@ -485,7 +485,18 @@ function applyBody(ctx) {
           // 结果回来（tool/result 同一个 callId）就等于回答完了 —— 按 callId 收掉气泡。
           if (event.type === 'tool/call') {
             const tool = String(event.toolName || '')
-            // 普通工具调用不再记事件（用户 2026-10-30：使用工具也监听吗 不需要）
+            // v1.8.19：把「会话名 正在用 工具」加回来（用户要求），但**只进消息中心的
+            // 技术日志、不弹气泡** —— noteEvent 走的是记录通道，`tool` 也不在
+            // gate 的 HUMAN_KINDS 里，所以永远不会变成 P0/P1 气泡。
+            // 同一会话 60 秒记一条，免得一次任务刷出几十行。
+            if (tool) {
+              const lastTool = toolLoggedAt.get(`tool:${sid}`) || 0
+              const toolNow = Date.now()
+              if (toolNow - lastTool > 60_000) {
+                toolLoggedAt.set(`tool:${sid}`, toolNow)
+                gate.noteEvent?.('tool', `${title || '(无标题会话)'} 正在用 ${tool}`)
+              }
+            }
             if (/ask[_-]?user|AskUserQuestion/i.test(tool)) {
               gate.noteAlert?.('question', `【${title}】 正在等你回答...`, { ref: `ask:${callId}`, sticky: true })
               gate.noteEvent?.('question', `${title} 在等你回答（${tool}）`)

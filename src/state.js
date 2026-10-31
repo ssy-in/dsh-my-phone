@@ -13,7 +13,7 @@ const DEFAULTS = {
      * 「装好就能用」比「装好还要先找开关」重要。外网隧道也默认打开，
      * 见下面 tunnelEnabled。
      */
-    lanEnabled: false,
+    lanEnabled: true,
     /** Loopback admin page port. */
     lanPort: 8080,
     /** Public listener port; only bound while an entry point is enabled. */
@@ -157,6 +157,13 @@ export class MyPhoneState {
       this.data.settings.lanAutoOffMinutes = 0
       this.data.settings.tunnelAutoOffMinutes = 0
       this.data.settings.autoOffMinutes = 0
+      this.save()
+    }
+    // v8：默认两个入口都自动开（用户要求；v7 的「只用外网」作废）
+    if (this.data.migratedV8 !== true) {
+      this.data.migratedV8 = true
+      this.data.settings.lanEnabled = true
+      this.data.settings.tunnelEnabled = true
       this.save()
     }
     return this.data

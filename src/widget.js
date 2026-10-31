@@ -46,6 +46,12 @@
   var hoverTimer = 0
   var bubbleTimer = 0
   var panel = null
+  // v1.8.19：这三个量以前只读不写声明 —— showBubble 一开跑就 `bubbleSig is not defined`，
+  // 被调用方的 try/catch 吞掉，表现就是「气泡从来不弹、鼠标放上去也不弹」。
+  var bubbleSig = ''
+  var bubbleSide = 'left'
+  var bubbleTail = null
+  var bubbleSticky = false
 
   // ---------- 位置 ----------
   function load() {
@@ -351,6 +357,14 @@
         )
       })
       list.style.display = open ? 'block' : 'none'
+      // 下拉在面板下半部分时朝上展，不然被面板底边切掉
+      if (open) {
+        var rb = btn.getBoundingClientRect()
+        var need = 46 * TIMBRES.length + 12
+        list.className = 'picklist' + (rb.bottom + need > window.innerHeight - 12 ? ' up' : '')
+      } else {
+        list.className = 'picklist'
+      }
     }
     btn.addEventListener('click', function (ev) {
       ev.stopPropagation()
@@ -377,10 +391,55 @@
   }
 
   // ---------- 数据 ----------
+  /**
+   * 快照里的 `feed` 是**对象**（`{pending, human, tech, techRaw, unread, pendingCount}`，
+   * 见 `src/gate.js` 的 buildFeed），不是数组。
+   *
+   * v1.8.19 之前的 widget 一直按数组读它（`Array.isArray(data.feed) ? data.feed : []`），
+   * 于是永远拿到空数组：气泡不弹、消息列表永远「暂时没有需要你看的消息」、
+   * 红点也只剩 pendingCount 那一条路。这里统一摊平成数组，`pending` 排前面。
+   */
+  function feedItems() {
+    if (!data) return []
+    var f = data.feed
+    if (Array.isArray(f)) return f // 兼容老形状（手机只读快照可能给的是数组）
+    if (!f || typeof f !== 'object') return []
+    var out = []
+    if (Array.isArray(f.pending))
+      for (var i = 0; i < f.pending.length; i++) {
+        var p = f.pending[i]
+        if (!p) continue
+        out.push({
+          id: p.id,
+          seq: p.seq,
+          at: p.at,
+          text: p.text,
+          name: p.name,
+          level: p.level == null ? 0 : p.level,
+          pending: true,
+        })
+      }
+    if (Array.isArray(f.human))
+      for (var j = 0; j < f.human.length; j++) {
+        var it = f.human[j]
+        if (!it) continue
+        out.push({
+          id: it.id,
+          seq: it.seq,
+          at: it.at,
+          text: it.text,
+          kind: it.kind,
+          level: it.level == null ? 2 : it.level,
+          pending: false,
+        })
+      }
+    return out
+  }
+
   function unreadCount() {
     if (!data) return 0
     if (typeof data.pendingCount === 'number' && data.pendingCount > 0) return data.pendingCount
-    var feed = Array.isArray(data.feed) ? data.feed : []
+    var feed = feedItems()
     var n = 0
     for (var i = 0; i < feed.length; i++) if (feed[i] && feed[i].pending) n += 1
     return n
@@ -388,7 +447,7 @@
 
   function summary() {
     if (!data) return '手机连 DSH · 点一下扫码'
-    var feed = Array.isArray(data.feed) ? data.feed : []
+    var feed = feedItems()
     for (var i = 0; i < feed.length; i++) {
       var it = feed[i]
       if (it && it.pending && it.text) return it.title ? it.title + '：' + it.text : it.text
@@ -450,6 +509,42 @@
     return { tag: '手机连接', main: [{ t: '点一下 · 手机扫码连 DSH' }] }
   }
 
+  /**
+   * 把气泡摆到球旁边（v1.8.19 补上；以前这个函数只被调用、从未实现，
+   * 于是 showBubble 第一行就抛 ReferenceError，气泡永远出不来）。
+   *
+   * 规则：优先摆球的左侧（球默认贴右边），左边放不下就摆右侧；
+   * 竖直方向跟球心对齐再夹进视口，尖角始终指向球心。
+   * 面板开着时气泡藏在后面，不做特殊处理。
+   */
+  function placeBubble() {
+    if (!bubble || !el) return
+    var w = bubble.offsetWidth || 244
+    var h = bubble.offsetHeight || 96
+    var gap = 14
+    var r = el.getBoundingClientRect()
+    var cx = r.left + r.width / 2
+    var cy = r.top + r.height / 2
+    var vwv = vw()
+    var vhv = vh()
+    var left = cx - gap - w
+    if (left < 8) left = cx + r.width / 2 + gap
+    if (left + w > vwv - 8) left = Math.max(8, vwv - w - 8)
+    var top = cy - h / 2
+    top = Math.min(Math.max(8, top), Math.max(8, vhv - h - 8))
+    bubble.style.left = Math.round(left) + 'px'
+    bubble.style.top = Math.round(top) + 'px'
+    // 尖角朝向球那一侧，纵向落在球心高度上
+    var onLeft = cx > left + w / 2
+    bubbleSide = onLeft ? 'left' : 'right'
+    if (bubbleTail) {
+      bubbleTail.style[bubbleSide === 'right' ? 'left' : 'right'] = '-5px'
+      bubbleTail.style[bubbleSide === 'right' ? 'right' : 'left'] = 'auto'
+      var ty = Math.round(Math.min(Math.max(16, cy - top - 4.5), Math.max(16, h - 22)))
+      bubbleTail.style.top = ty + 'px'
+    }
+  }
+
   function showBubble(ms) {
     if (!bubble) return
     var card = bubbleCard()
@@ -466,13 +561,13 @@
       'position:fixed;z-index:2147483001;width:244px;padding:13px 17px 14px;border-radius:16px;' +
       'background:#fff;border:1px solid rgba(26,111,224,.28);box-shadow:0 16px 38px rgba(6,24,36,.22);' +
       'text-align:left;opacity:0;transform:translateY(-4px);transition:opacity .18s ease,transform .18s ease;pointer-events:none'
-    // 尖角（朝球那侧）
+    // 尖角（朝球那侧）—— 放在哪个边、纵向落点都由 placeBubble() 决定
     var tail = document.createElement('span')
     tail.style.cssText =
-      'position:absolute;top:var(--tail-y,22px);width:9px;height:9px;background:#fff;border:1px solid rgba(26,111,224,.28);' +
+      'position:absolute;top:22px;width:9px;height:9px;background:#fff;border:1px solid rgba(26,111,224,.28);' +
       'transform:rotate(45deg)'
-    tail.style[bubbleSide === 'right' ? 'left' : 'right'] = '-5px'
     bubble.appendChild(tail)
+    bubbleTail = tail
     var head = document.createElement('div')
     head.style.cssText = 'display:flex;align-items:center;gap:8px'
     var tag = document.createElement('span')
@@ -518,7 +613,7 @@
   // 事件驱动：快照里出现「新的」待处理或新消息时主动弹一次气泡（P0 常驻，等人在面板里点掉）
   var lastBubbleKey = ''
   function autoBubble() {
-    var feed = data && Array.isArray(data.feed) ? data.feed : []
+    var feed = feedItems()
     var top = null
     for (var i = 0; i < feed.length; i++) {
       if (feed[i] && feed[i].pending) {
@@ -532,6 +627,16 @@
           top = feed[j]
           break
         }
+      }
+    }
+    // feed 为空的情况（老版本快照、或 gate 暂时给 null）：退回用 notices / approvals
+    // 判断「有没有新东西」，否则手机上、升级过程中永远等不到一次气泡。
+    if (!top) {
+      var nApprovals = data && Array.isArray(data.approvals) ? data.approvals.length : 0
+      var nNotices = data && Array.isArray(data.notices) ? data.notices.length : 0
+      if (nApprovals || nNotices) {
+        var fb = bubbleCard()
+        top = { seq: '', text: JSON.stringify(fb), level: nApprovals ? 0 : 2, pending: false }
       }
     }
     if (!top) return
@@ -602,13 +707,19 @@
   }
 
   function paint() {
-    // 提示音：有新消息（更靠前的一条）就响；同一时刻只响一次
+    // 提示音：有新消息（时间比上次新）就响；同一时刻只响一次
     try {
-      var feed = data && Array.isArray(data.feed) ? data.feed : []
-      var newestAt = feed.length ? Number(feed[0].at) || 0 : 0
+      var feed = feedItems()
+      // 取「最新的一条」而不是 feed[0]：pending 会排在最前面，但它不一定最新
+      var newest = null
+      for (var k = 0; k < feed.length; k++) {
+        var t = Number(feed[k] && feed[k].at) || 0
+        if (!newest || t > (Number(newest.at) || 0)) newest = feed[k]
+      }
+      var newestAt = newest ? Number(newest.at) || 0 : 0
       var pendingNow = unreadCount()
       if (newestAt && newestAt > lastFeedAt) {
-        if (lastFeedAt) playLevel(Number(feed[0].level) || 2)
+        if (lastFeedAt) playLevel(Number(newest.level) || 2)
       } else if (pendingNow > lastPending && lastPending >= 0) {
         playLevel(0)
       }
@@ -940,10 +1051,10 @@
       '  font:11.5px/1.5 ui-monospace,Menlo,monospace;color:#26485c}',
       '#dmp-panel button.mini{border:1px solid #cfe4ec;background:#fff;color:#0a5f75;font:700 11.5px/1 inherit;padding:6px 9px;border-radius:8px;cursor:pointer}',
       '#dmp-panel button.mini:hover{background:#eaf7fb}',
-      '#dmp-panel button.primary{display:block;width:100%;margin:14px auto 0;max-width:268px;border:0;cursor:pointer;',
+      '#dmp-panel button.primary:not(.btn){display:block;width:100%;margin:14px auto 0;max-width:268px;border:0;cursor:pointer;',
       '  background:linear-gradient(145deg,#2a86a3,#0a5f75);color:#fff;font:800 14.5px/1 inherit;padding:13px 18px;border-radius:13px;',
       '  box-shadow:0 8px 20px rgba(10,95,117,.28)}',
-      '#dmp-panel button.primary:disabled{opacity:.6;cursor:default}',
+      '#dmp-panel button.primary:not(.btn):disabled{opacity:.6;cursor:default}',
       '#dmp-panel button.ghost{border:0;background:transparent;color:#5f7688;font:700 12px/1 inherit;cursor:pointer;padding:8px}',
       '#dmp-panel button.ghost:hover{color:#0a5f75}',
       '#dmp-panel .dmp-center{text-align:center}',
@@ -1034,6 +1145,7 @@
       '#dmp-panel .pickopt{display:block;width:100%;text-align:left;border:0;background:transparent;color:#0d2130;font:12.5px/1.4 system-ui;padding:7px 9px;border-radius:7px;cursor:pointer}',
       '#dmp-panel .pickopt:hover{background:#f1f9fc}',
       '#dmp-panel .pickopt.on{background:#e4f6fa;color:#0a5f75;font-weight:700}',
+      '#dmp-panel .picklist.up{top:auto;bottom:calc(100% + 4px)}',
       '#dmp-panel .row .grow{flex:1;min-width:0}',
       '#dmp-panel .row .name{font-size:13px;font-weight:700;color:#0d2130;word-break:break-all}',
       '#dmp-panel .row .meta{font-size:11.5px;color:#6b8394;margin-top:2px}',
@@ -1163,9 +1275,29 @@
       }
       refresh()
       clearInterval(ticker)
-      ticker = setInterval(render, 1000)
+      ticker = setInterval(tickTtl, 1000)
       document.addEventListener('keydown', onKey)
       window.addEventListener('dsh-my-phone:closepanel', close)
+    }
+
+    // 每秒只需要更新「m:ss 后失效」这一行 —— 以前是整块 render() 重建 DOM，
+    // 为了几个数字把整个面板拆了重搭，纯浪费。
+    function tickTtl() {
+      if (typeof document !== 'undefined' && document.hidden) return
+      if (!body) return
+      var el = body.querySelector('.dmp-ttl')
+      if (!el) return
+      var exp = data && data.ticketExpiresAt ? Number(data.ticketExpiresAt) : 0
+      var left = exp > 0 ? exp - Date.now() : 0
+      if (left <= 0) {
+        // 到点了才需要整块重画（把二维码变灰 + 文案换成「已失效」）
+        if (String(el.className || '').indexOf('dead') < 0) render()
+        return
+      }
+      var mm = Math.floor(left / 60000)
+      var ss = Math.floor((left % 60000) / 1000)
+      var txt = mm + ':' + (ss < 10 ? '0' + ss : ss) + ' 后失效 · 过期后手动换一张'
+      if (el.textContent !== txt) el.textContent = txt
     }
 
     function tabBtn(key, label) {
@@ -1301,8 +1433,8 @@
       ])
     }
 
-    function segRow(label, key, current, choices, small) {
-      var seg = h('div', { class: 'seg' + (small ? ' sm' : '') })
+    function segRow(label, hint, key, current, choices) {
+      var seg = h('div', { class: 'seg sm', style: 'flex:0 0 auto' })
       choices.forEach(function (m) {
         seg.appendChild(
           h('button', {
@@ -1314,9 +1446,11 @@
           }),
         )
       })
+      // 用户要求：标题一行、按钮独占一排、说明放最下面（挤成两栏时说明被压成窄条折成一堆）
       return h('div', { style: 'padding:2px 0 10px;border-bottom:1px solid #eaf2f6' }, [
-        h('div', { style: 'margin-bottom:5px;font-size:11.5px;color:#5c7284', text: label }),
+        h('div', { class: 'name', style: 'margin-bottom:6px', text: label }),
         seg,
+        h('div', { class: 'meta', style: 'margin-top:6px;line-height:1.55', text: hint }),
       ])
     }
 
@@ -1390,6 +1524,8 @@
         var actions = h('div', { style: 'display:flex;align-items:center;gap:6px;flex:0 0 auto' })
         row.appendChild(actions)
         if (editId === d.id) {
+          // 编辑态：名字占一行，输入框 + 保存/取消 另起一行占满宽度
+          actions.style.display = 'none'
           var input = h('input', {
             value: editText,
             maxlength: '24',
@@ -1415,28 +1551,30 @@
               /* 忽略 */
             }
           }, 0)
-          actions.appendChild(input)
-          actions.appendChild(
-            h('button', {
-              class: 'btn primary',
-              text: '保存',
-              onclick: function () {
-                post('device', { id: d.id, note: editText })
-                editId = null
-              },
-            }),
-          )
-          actions.appendChild(
-            h('button', {
-              class: 'btn ghost',
-              text: '取消',
-              onclick: function () {
-                editId = null
-                render()
-              },
-            }),
-          )
+          input.style.flex = '1 1 auto'
+          input.style.minWidth = '0'
           out.push(row)
+          out.push(
+            h('div', { style: 'display:flex;align-items:center;gap:6px;margin:-2px 0 10px' }, [
+              input,
+              h('button', {
+                class: 'btn primary',
+                text: '保存',
+                onclick: function () {
+                  post('device', { id: d.id, note: editText })
+                  editId = null
+                },
+              }),
+              h('button', {
+                class: 'btn ghost',
+                text: '取消',
+                onclick: function () {
+                  editId = null
+                  render()
+                },
+              }),
+            ]),
+          )
           return
         }
         actions.appendChild(
@@ -1485,7 +1623,8 @@
     }
 
     function feedRows() {
-      var feed = data && Array.isArray(data.feed) ? data.feed : []
+      // data.feed 是对象（pending/human/tech），这里用摊平后的列表 —— 见 feedItems()
+      var feed = feedItems()
       var out = []
       if (!feed.length) {
         out.push(
@@ -1520,6 +1659,22 @@
         wrap.appendChild(line)
       })
       out.push(wrap)
+      // 「会话名 正在用 工具」这类技术动态：用户要求加回来显示，但**不弹气泡、不响音、不进红点**。
+      // 所以它们只留在 feed.tech 里（不进 feedItems()），这里单独列一小块。
+      var techList = data && data.feed && Array.isArray(data.feed.tech) ? data.feed.tech : []
+      if (techList.length) {
+        out.push(h('div', { class: 'dmp-hint', style: 'margin:8px 0 2px', text: '技术动态（只记录，不弹气泡）' }))
+        var techWrap = h('div', { class: 'feed' })
+        techList.slice(0, 4).forEach(function (t) {
+          techWrap.appendChild(
+            h('div', { class: 'it' }, [
+              h('div', { class: 'tx', text: t.text || '' }),
+              h('div', { class: 'tm', text: hhmm(t.at) + (Number(t.count) > 1 ? ' · ' + t.count + ' 次' : '') }),
+            ]),
+          )
+        })
+        out.push(techWrap)
+      }
       return out
     }
 
@@ -1619,8 +1774,8 @@
         }),
       )
       out.push(h4i('入口', '局域网只在同一个 Wi-Fi 里能用；外网走 Cloudflare 中继，在外面也能连回来。两个都关 = 手机进不来。'))
-      function addrLine(urlValue, hint) {
-        if (!urlValue) return h('div', { class: 'dmp-hint', style: 'padding:0 0 10px', text: hint })
+      function addrLine(urlValue) {
+        if (!urlValue) return h('div', { class: 'dmp-hint', style: 'padding:0 0 10px', text: '地址还没起来，稍等一秒' })
         return h('div', { class: 'dmp-link', style: 'margin:0 0 10px' }, [
           h('code', { text: urlValue }),
           h('button', {
@@ -1637,14 +1792,21 @@
           post('toggle', { key: 'lan' })
         }),
       )
-      out.push(addrLine(lan ? String((data && data.lanUrl) || '') : '', lan ? '地址还没起来，稍等一秒' : '打开后这里会给局域网地址'))
+      out.push(addrLine(lan ? String((data && data.lanUrl) || '') : ''))
       out.push(
         switchRow('外网访问', tun ? '经 Cloudflare 中继，开着就能从外面连回来' : '关着（出门在外就连不上）', tun, function () {
           post('toggle', { key: 'tunnel' })
         }),
       )
-      out.push(addrLine(tun ? String((data && data.tunnelUrl) || '') : '', tun ? '隧道还在建，几秒后出现地址' : '打开后这里会给外网地址'))
-      out.push(segRow('自动关闭', 'tunnel', Number(data && data.tunnelAutoOffMinutes) || 0, [0, 30, 60, 90, 120], true))
+      out.push(
+        segRow(
+          '外网自动关闭',
+          '外网入口空闲到时间就自动收掉（外面的设备会掉线，回来点一下「外网访问」就重开）',
+          'tunnel',
+          Number(data && data.tunnelAutoOffMinutes) || 0,
+          [0, 30, 60, 90, 120],
+        ),
+      )
       out.push(h4i('消息', '新设备连入、会话等你授权、失败 / 重试、上下文到 80/90/95% 都会在这里留一条，点「知道了」清掉。'))
       feedRows().forEach(function (n) {
         out.push(n)
