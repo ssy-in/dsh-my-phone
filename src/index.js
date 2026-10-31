@@ -19,7 +19,6 @@ export const name = 'dsh-my-phone'
  * `cannot get property "xxx" without inject`」。之前为了规避「apply 不执行」
  * 把 connection 从 inject 里去掉，结果配对能成功、但每个代理请求都 503 —— 就是这个。
  */
-export const inject = ['webServer', 'connection']
 
 const log = {
   info: (...args) => console.log(...args),
@@ -81,7 +80,7 @@ function lanAddress() {
   return candidates[0]?.ip ?? '127.0.0.1'
 }
 
-export function apply(ctx) {
+function applyBody(ctx) {
   markBoot('applied')
   const state = new MyPhoneState(path.join(dshHome(), '.dsh-my-phone'))
   const session = createSession({ ctx })
@@ -650,4 +649,35 @@ export function apply(ctx) {
   } catch {
     /* effect unsupported */
   }
+}
+
+// 悬浮球的注入行必须在 apply() 里**立刻**注册：
+// 桌面端/网页端的 index 注入表是宿主启动时一次性收集的，对象级 `export const inject` 会把
+// apply 推迟到服务就绪之后，那一行就永远进不来（dsh-whale-widget 的 #152/#153 就是这个坑）。
+// 所以现在：行先注册，其余逻辑放进 ctx.inject 等齐服务后再跑，语义与原来等价。
+const WIDGET_ROW_TEXT =
+  '(function(){try{var d=document.body||document.documentElement;if(!d)return;' +
+  'if(window.__dshMyPhoneWidgetLoader)return;window.__dshMyPhoneWidgetLoader=1;' +
+  'var s=document.createElement(\"script\");s.src=\"/__myphone/widget.js?v=1\";' +
+  's.onerror=function(){};d.appendChild(s)}catch(e){}})()'
+
+export function apply(ctx) {
+  try {
+    ctx.on('webserver/index-inject', (table) => {
+      if (!Array.isArray(table)) return
+      for (const row of table) {
+        if (row && row.kind === 'script' && typeof row.text === 'string' && row.text.indexOf('/__myphone/widget.js') >= 0) return
+      }
+      table.push({ kind: 'script', placement: 'body', text: WIDGET_ROW_TEXT })
+    })
+  } catch (err) {
+    log.warn?.(`[my-phone] 注入行注册失败：${(err && err.message) || err}`)
+  }
+  // ctx.inject 是本宿主的标准写法（dsh-whale-widget 也在用）；万一某个旧版本没有，
+  // 就退回到「直接跑」——反正原来的对象级 inject 已经被去掉，不能再让整个插件不加载。
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['webServer', 'connection'], (inner) => applyBody(inner))
+    return
+  }
+  applyBody(ctx)
 }

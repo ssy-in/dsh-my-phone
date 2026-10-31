@@ -1,4 +1,14 @@
+import { readFileSync } from 'node:fs'
 import { toSvg } from './qr.js'
+
+// 页脚版本号跟着 package.json 走：以前这里写死 v0.3，跟实际版本差了一大截
+const PKG_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || ''
+  } catch {
+    return ''
+  }
+})()
 
 const BASE_CSS = `:root{
   --bg:#f2f6fb; --card:#ffffff; --line:#d9e3f0; --line2:#eef3f9;
@@ -506,7 +516,7 @@ export function adminPage({ state, pairing, status, addresses = [] }) {
 </div>
 
 <p class="foot">
-  DSH My Phone v0.3 · 状态目录里的 state.json 含本机签名密钥，请勿外传<br>
+  DSH My Phone v${PKG_VERSION} · 状态目录里的 state.json 含本机签名密钥，请勿外传<br>
   本页只允许从本机（127.0.0.1）访问
 </p>
 

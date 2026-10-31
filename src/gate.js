@@ -497,16 +497,45 @@ export function createGate({
   // 日志上限：单文件 256KB，满了滚成 .1 再重开 —— 公网口有扫描器撞，
   // 不设限的话 pair.log 会一直被写大（之前就吃过这个亏）
   const LOG_MAX_BYTES = 256 * 1024
+  // A3：日志先进内存队列，200ms 攒一批再落盘。
+  // 公网口天天被扫描，每个匿名 401 都同步 appendFileSync 会把事件循环拖住；攒批之后
+  // 一次扫描风暴最多变成每秒 5 次写盘，而不是每秒几十次。
+  const logQueue = new Map()
+  let logTimer = null
+  function flushLogs() {
+    logTimer = null
+    for (const file of Array.from(logQueue.keys())) {
+      const chunks = logQueue.get(file) || []
+      logQueue.delete(file)
+      if (!chunks.length) continue
+      try {
+        try {
+          if (fs.statSync(file).size > LOG_MAX_BYTES) fs.renameSync(file, `${file}.1`)
+        } catch {
+          /* 文件还不存在，正常 */
+        }
+        fs.appendFileSync(file, chunks.join(''))
+      } catch {
+        /* 写不了就算了，绝不能因为日志把功能搞挂 */
+      }
+    }
+  }
+  try {
+    process.on('exit', flushLogs)
+  } catch {
+    /* 没有 process（极端宿主）就算了 */
+  }
   function appendCapped(file, text) {
     try {
-      try {
-        if (fs.statSync(file).size > LOG_MAX_BYTES) fs.renameSync(file, `${file}.1`)
-      } catch {
-        /* 文件还不存在，正常 */
+      const arr = logQueue.get(file) || []
+      arr.push(String(text))
+      logQueue.set(file, arr)
+      if (!logTimer) {
+        logTimer = setTimeout(flushLogs, 200)
+        if (typeof logTimer.unref === 'function') logTimer.unref()
       }
-      fs.appendFileSync(file, text)
     } catch {
-      /* 写不了就算了，绝不能因为日志把功能搞挂 */
+      /* 入队都失败就算了 */
     }
   }
 
@@ -1149,8 +1178,39 @@ export function createGate({
   //    reachable from the network even while the public side is open;
   //  - publicServer binds 0.0.0.0 and exists only while the user has an
   //    entry point enabled. Nothing listens publicly when everything is off.
+  /** 管理口只该被「本机浏览器直接打开」用到：
+   *  ①监听已在 127.0.0.1 上，远端 TCP 进不来；②还要挡住 DNS rebinding ——
+   *  攻击者让自己域名解析到 127.0.0.1，再用该域名当 Host 发请求，就能拿到管理页。
+   *  所以 Host（以及存在时的 Origin）必须是回环名字。 */
+  function loopbackHost(hostHeader) {
+    const h = String(hostHeader || '').trim().toLowerCase()
+    if (!h) return false
+    const name = h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0]
+    return name === '127.0.0.1' || name === 'localhost' || name === '[::1]' || name === '::1'
+  }
+  function adminOriginOk(req) {
+    if (!loopbackHost(req.headers.host)) return false
+    const origin = req.headers.origin
+    if (!origin) return true
+    try {
+      return loopbackHost(new URL(String(origin)).host)
+    } catch {
+      return false
+    }
+  }
+
   const adminServer = http.createServer(async (req, res) => {
     try {
+      if (!adminOriginOk(req)) {
+        send(
+          res,
+          403,
+          '<!doctype html><meta charset="utf-8"><title>只允许本机访问</title>' +
+            '<p style="font:16px/1.8 system-ui,-apple-system,\'PingFang SC\',sans-serif;padding:36px">' +
+            '这个页面只接受从 127.0.0.1 直接打开（Host 必须是回环地址）。</p>',
+        )
+        return
+      }
       await handleAdmin(req, res, new URL(req.url || '/', 'http://placeholder'))
     } catch (err) {
       logError(err, '管理页', req)
@@ -1508,6 +1568,11 @@ export function createGate({
       publicPort = null
     },
     async close() {
+      try {
+        flushLogs()
+      } catch {
+        /* 忽略 */
+      }
       pairing.clear()
       await closeServer(publicServer)
       await closeServer(adminServer)

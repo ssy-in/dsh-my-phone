@@ -1,0 +1,74 @@
+// v1.5.0 的两条硬约束：
+//  1. 弹窗必须由 widget.js（纯 DOM）提供 —— 静态检查关键标记，防止以后又搬回 React；
+//  2. 管理口必须挡住 DNS rebinding（Host / Origin 不是回环就直接 403）。
+import fs from 'node:fs'
+import { createGate } from '../src/gate.js'
+
+let pass = 0
+let fail = 0
+const check = (name, ok, extra = '') => {
+  if (ok) {
+    pass += 1
+    console.log(`✓ ${name}${extra ? ` — ${extra}` : ''}`)
+  } else {
+    fail += 1
+    console.log(`✗ ${name}${extra ? ` — ${extra}` : ''}`)
+  }
+}
+
+// ---------- 1. 静态：纯 DOM 弹窗 ----------
+const src = fs.readFileSync(new URL('../src/widget.js', import.meta.url), 'utf8')
+check('widget.js 自带弹窗创建函数', src.includes('function createPanel()'))
+check('弹窗容器与样式都在 widget.js 里', src.includes("id: 'dmp-panel'") && src.includes('#dmp-panel .dmp-card'))
+check('球尺寸与旧版一致（135）', /var TILE = 135/.test(src))
+check('悬停气泡仍在纯 DOM 里', src.includes('dmp-w-bubble'))
+check('不再用 window.open 兜底（Electron 会拦）', !src.includes("window.open('/__myphone/'"))
+check(
+  'React 先接管时不会叠两套面板',
+  src.includes('window.__dshMyPhoneOpened') && src.includes('if (window.__dshMyPhoneOpened) return'),
+)
+check('纯 DOM 球就位后让 React 球让位（dmp-widget-on）', src.includes("classList.add('dmp-widget-on')"))
+check('连接页两行文案与「生成二维码」按钮在 DOM 版里', src.includes('相机或者浏览器扫码连接') && src.includes('生成二维码'))
+
+// ---------- 2. 运行时：管理口 Host / Origin 白名单 ----------
+const PORT = 18097
+const state = {
+  settings: { lanEnabled: false, tunnelEnabled: false, lanPort: PORT, publicPort: 0, autoOffMinutes: 0 },
+  devices: [],
+  patchSettings(patch) {
+    Object.assign(state.settings, patch)
+    return state.settings
+  },
+}
+const gate = createGate({
+  state,
+  session: null,
+  log: { info() {}, warn() {}, error() {}, debug() {} },
+  getAddresses: () => [`http://127.0.0.1:${PORT}/`],
+})
+await gate.startAdmin(PORT)
+await new Promise((r) => setTimeout(r, 120))
+
+const req = async (headers) => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/__myphone/`, { headers })
+  return { status: res.status, body: await res.text() }
+}
+
+const ok = await req({ host: `127.0.0.1:${PORT}` })
+check('本机直连管理页照常 200', ok.status === 200, `HTTP ${ok.status}`)
+
+const localhost = await req({ host: `localhost:${PORT}` })
+check('localhost 也放行', localhost.status === 200, `HTTP ${localhost.status}`)
+
+const rebinding = await req({ host: `evil.example.com:${PORT}` })
+check('非回环 Host（DNS rebinding）→ 403', rebinding.status === 403, `HTTP ${rebinding.status}`)
+
+const badOrigin = await req({ host: `127.0.0.1:${PORT}`, origin: 'https://evil.example.com' })
+check('同源校验：跨站 Origin → 403', badOrigin.status === 403, `HTTP ${badOrigin.status}`)
+
+const goodOrigin = await req({ host: `127.0.0.1:${PORT}`, origin: `http://127.0.0.1:${PORT}` })
+check('同源 Origin → 放行', goodOrigin.status === 200, `HTTP ${goodOrigin.status}`)
+
+await gate.close()
+console.log(`\n${pass}/${pass + fail} 通过`)
+if (fail) process.exit(1)

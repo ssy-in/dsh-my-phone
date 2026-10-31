@@ -9,7 +9,10 @@
 
 ## 一、安全（审计剩下的 3 条）
 
-### A1 · 管理口加 Host / Origin 白名单
+- [ ] **删掉 React 弹窗（等用户实测通过后）**：v1.5.0 起弹窗已由  纯 DOM 提供， 里的 React 面板只是后备（React 先接管时它才会开）。用户确认新弹窗顺手后，把 client.js 里  的面板部分删掉，只留「设置 → 插件」那张卡片。
+
+
+### A1 · 管理口加 Host / Origin 白名单 — ✅ v1.5.0 已完成
 
 - **现状**：管理口只监听 `127.0.0.1`，代码里 `isLoopback()` 对这个监听器**恒为真**，等于只剩 `x-myphone-admin: 1` 这一道自定义头在挡。这个头挡住了普通网页（浏览器不允许跨站自定义头 + 会触发预检），但**挡不住 DNS rebinding**：攻击者把自己的域名解析到 `127.0.0.1`，受害者浏览器就把请求当成同源发出来，`Origin` 是 `http://evil.com`，我们目前不看它。
 - **为什么没做**：要真正做成 rebinding 无效，必须校验 `Host` 是 `127.0.0.1:<port>` 或 `localhost:<port>`，且 `Origin`（如果有）与 Host 同源。改起来 30 行，但会把「用 `--trusted-host` 起 DSH 的人从别的域名访问」这条路径弄复杂，得先想清楚放行规则，不适合塞在赶进度的这一版里。
@@ -26,7 +29,7 @@
 - **怎么修**：`handleUpgrade(req, socket, head)` 开头加：`if (rejectStaleHost(req, socket)) return`（该函数已存在，只是签名要支持 socket 写回 400 + 关闭）；另外把 `forward()` 里那段 header 改写（host/origin/sec-fetch-site/x-forwarded-* 清理）抽成 `rewriteRequestHeaders(req, authority)` 让两边共用，避免以后改一处漏一处。
 - **怎么验**：`test/probe-v5.mjs` 加一条：对旧域名发 `Upgrade: websocket` 请求，期望连接被关掉而不是 101。
 
-### A3 · 日志别再同步写盘
+### A3 · 日志别再同步写盘 — ✅ v1.5.0 已完成
 
 - **现状**：`appendCapped()` 用的是同步 `appendFileSync`，每个请求都可能触发一次磁盘写（Windows + 杀毒软件下几十毫秒）。已经做了「256KB 轮转」和「同类事件 60 秒合并一次」，公网口天天被扫也不会撑爆，但**同步 I/O 仍在请求路径上**。
 - **为什么没做**：改成异步要引入一个写队列 + 进程退出前 `flush()`，还要保证「崩溃时最多丢最近几行」是可接受的；这版已经在改 30 处，不想同时把日志子系统换血。

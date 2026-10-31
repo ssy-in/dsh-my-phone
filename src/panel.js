@@ -23,6 +23,9 @@ const ICON96_PATH = new URL('../icon-96.png', import.meta.url)
 // 悬浮球专用：按内容边界裁过的鲸尾（512x459，四边没有透明留白），
 // 这样它才能真的贴住窗口边 —— 正方形那张上下各有 ~5% 透明边，看着就是「没贴紧」。
 const ICON_FAB_PATH = new URL('../icon-tight.png', import.meta.url)
+// 悬浮球脚本按 mtime 缓存：改完 widget.js 刷页面就生效，不用重启宿主
+const WIDGET_PATH = new URL('./widget.js', import.meta.url)
+let widgetCache = { text: '', mtimeMs: 0 }
 /** 这次进程是什么时候起来的：前端靠它判断「DSH 重启了，该弹一次引导气泡」。 */
 const STARTED_AT = Date.now()
 
@@ -96,7 +99,9 @@ export function registerPanel(ctx, { state, gate, getAddresses, getQrBase = null
     const liveTicket = gate.pairing ? gate.pairing.peekTicket() : null
     const pairUrl = liveTicket ? gate.pairingUrl(liveTicket.ticket) || url : url
     let qrSvg = ''
-    if (pairUrl) {
+    // 没有活票据时不要画码：以前会把「不带票据的地址」也画成二维码，
+    // 手机上扫进去只会得到「二维码已失效」，看着像 bug（用户 2026-10-29 报的就是这个）
+    if (liveTicket && pairUrl) {
       try {
         qrSvg = toSvg(pairUrl, { scale: 4, margin: 2, dark: '#0b1220', light: '#ffffff' }).svg
       } catch {
@@ -176,6 +181,25 @@ export function registerPanel(ctx, { state, gate, getAddresses, getQrBase = null
         }
         res.writeHead(204, { 'cache-control': 'no-store' })
         res.end()
+      },
+    },
+    {
+      // 悬浮球脚本：由宿主 index 注入的内联行自己 `<script src>` 拉取。
+      // 不含任何凭据/状态，所以不做登录校验；带上 no-store 免得改完不生效。
+      kind: 'exact',
+      path: '/__myphone/widget.js',
+      handler: (req, res) => {
+        try {
+          const st = statSync(WIDGET_PATH)
+          if (!widgetCache.text || widgetCache.mtimeMs !== st.mtimeMs) {
+            widgetCache = { text: readFileSync(WIDGET_PATH, 'utf8'), mtimeMs: st.mtimeMs }
+          }
+          res.writeHead(200, {'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store'})
+          res.end(widgetCache.text)
+        } catch (err) {
+          res.writeHead(404, {'content-type': 'text/plain; charset=utf-8'})
+          res.end('widget.js not found')
+        }
       },
     },
     {

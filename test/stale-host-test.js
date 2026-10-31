@@ -26,7 +26,7 @@ const gate = createGate({
   // 当前「真实」的隧道地址：域名换成别的就该判过期
   getAddresses: () => [`https://${LIVE}/`, 'http://192.168.1.107:18391/'],
   getStatus: () => ({ tunnel: { phase: 'running', url: `https://${LIVE}/` } }),
-  logFile: path.join(dir, 'pair.log'),
+  logFile: path.join(dir, 'pair.log') /* 见下 */,
 })
 
 function fetch1(host, pathname = '/') {
@@ -82,6 +82,7 @@ await check('取码接口在旧域名上也被拦下', async () => {
   assert.ok(r.body.includes('这个地址已经过期了'))
 })
 
+await new Promise((r) => setTimeout(r, 320)) // A3：日志 200ms 批量落盘
 await check('拒绝记录写进 pair.log', () => {
   const text = fs.readFileSync(path.join(dir, 'pair.log'), 'utf8')
   assert.ok(text.includes('旧隧道域名'), 'pair.log 应该记一笔')

@@ -32,6 +32,20 @@ const gate = {
     gateListeners.add(fn)
     return () => gateListeners.delete(fn)
   },
+  // 票据桩：v1.5.1 起二维码只在有活票据时生成，得能出票才看得到码
+  pairing: (() => {
+    let cur = null
+    return {
+      peekTicket: () => (cur && cur.expiresAt > Date.now() ? cur : null),
+      peek: () => null, // 6 位码通道已停用，面板只读这个字段
+      issueTicket: () => (cur = { ticket: 'test-ticket-1234567890', expiresAt: Date.now() + 180000 }),
+    }
+  })(),
+  issueTicket() {
+    this.pairing.issueTicket()
+    return this.pairing.peekTicket()
+  },
+  pairingUrl: (ticket) => `http://192.168.1.107:18081/__myphone/pair?t=${ticket}`,
 }
 
 const dispose = registerPanel(ctx, {
@@ -93,7 +107,19 @@ check('挂载了开关路由', routes.has('/__myphone/panel/toggle'))
     ['lanEnabled', 'tunnelEnabled', 'autoOffMinutes', 'url', 'qrSvg', 'adminUrl', 'devices'].every((k) => k in data),
     Object.keys(data).join(','),
   )
-  check('状态带二维码 SVG', String(data.qrSvg).startsWith('<svg'), `${String(data.qrSvg).length}B`)
+  check('没有活票据时不画二维码（免得扫出「已失效」）', String(data.qrSvg) === '', `${String(data.qrSvg).length}B`)
+
+  // v1.5.1：二维码只在有活票据时生成 —— 出了票再看
+  {
+    const res2 = fakeRes()
+    await routes.get('/__myphone/panel/ticket').handler(
+      fakeReq({ method: 'POST', headers: { 'x-myphone-panel': '1' } }),
+      res2,
+    )
+    const data2 = JSON.parse(res2.body)
+    check('出票后带二维码 SVG', String(data2.qrSvg).startsWith('<svg'), `${String(data2.qrSvg).length}B`)
+    check('出票后带过期时间', Number(data2.ticketExpiresAt) > Date.now(), String(data2.ticketExpiresAt))
+  }
   check('状态含配对地址', data.url === 'http://192.168.1.107:18081/', data.url)
   check('状态含「跑完一轮」通知数组', Array.isArray(data.turns), typeof data.turns)
 }

@@ -280,8 +280,8 @@ window.__ModuleLoader__.load({
     // 点
 
     const FAB_TILE = 135 // 图标宽度（用户要求再小 10%：150 → 135）
-    // 临时开关：true = 图标透明底（直接看鲸鱼本体），false = 恢复白方块 + 描边 + 投影。
-    // 用户说「先看一眼，后面改回」，所以做成一个常量，一处改回。
+    // 图标透明底（已定稿）：鲸鱼本体直接贴在壁纸/桌面上，不要白方块、描边、投影。
+    // 想换回方块样式，把这里改成 false 即可（下面三处样式会一起回来）。
     const FAB_TILE_ALPHA = true
     // 图标已经裁到内容边界（512x459，没有透明留白），所以盒子宽高就按图片比例来，
     // 高度不再凑成正方形 —— 正方形那两条透明边就是「没贴紧」的元凶。
@@ -534,6 +534,8 @@ html #dsh-my-phone-standalone::before,html #dsh-my-phone-standalone::after,html 
 /* v0.9.21：列表项也不做 hover 高亮，只保留选中态 .dmp-item.on */
 .dmp-item.on{background:#eaf8fb;color:#0a5f75;font-weight:700}
 .dmp-label{position:absolute;left:50%;transform:translateX(-50%);transition:transform .32s cubic-bezier(.34,1.56,.64,1),background .16s ease,color .16s ease}
+/* widget.js（纯 DOM 球）在时，React 那颗让位：只隐藏，不销毁——弹窗还靠 React 树 */
+.dmp-widget-on .dmp-wrap{display:none!important}
 .dmp-wrap:hover .dmp-label{transform:translate(-50%,-2px) scale(1.06);background:rgba(255,255,255,.98);color:#0a5f75}
 .dmp-dot{animation:dmp-pulse 1.7s ease-in-out infinite}
 @keyframes dmp-pulse{0%,100%{transform:scale(1);opacity:1}55%{transform:scale(1.22);opacity:.7}}
@@ -924,6 +926,19 @@ html #dsh-my-phone-standalone::before,html #dsh-my-phone-standalone::after,html 
       const clickTimer = React.useRef(null)
       const lastTap = React.useRef(0)
       const openRef = React.useRef(false)
+      // 悬浮球（widget.js，纯 DOM）点一下会派发这个事件；也把直调挂到 window 上给老浏览器兜底。
+      React.useEffect(() => {
+        const onOpen = () => {
+          window.__dshMyPhoneOpened = true
+          setOpen(true)
+        }
+        window.addEventListener('dsh-my-phone:open', onOpen)
+        window.__dshMyPhoneOpen = onOpen
+        return () => {
+          window.removeEventListener('dsh-my-phone:open', onOpen)
+          if (window.__dshMyPhoneOpen === onOpen) delete window.__dshMyPhoneOpen
+        }
+      }, [])
       React.useEffect(() => {
         openRef.current = open
       }, [open])
@@ -3848,8 +3863,7 @@ html #dsh-my-phone-standalone::before,html #dsh-my-phone-standalone::after,html 
                   borderRadius: 10,
                   // 贴边旋转用独立的 rotate 属性，跟 transform 的放大动画互不打架
                   rotate: fabEdge ? FAB_ROT[fabEdge] + 'deg' : undefined,
-                  // 临时透明底：用户要看一眼「鲸鱼直接贴在壁纸上」的效果。
-                  // 改回白底只要把 FAB_TILE_ALPHA 改成 false（三个字段一起回来）。
+                  // 透明底是定稿外观（见 FAB_TILE_ALPHA 的注释）。
                   background: FAB_TILE_ALPHA ? 'transparent' : '#ffffff',
                   border: FAB_TILE_ALPHA ? 'none' : '1px solid rgba(10,43,64,.10)',
                   boxShadow: FAB_TILE_ALPHA ? 'none' : '0 8px 22px rgba(8,38,56,.22)',
@@ -4016,6 +4030,8 @@ html #dsh-my-phone-standalone::before,html #dsh-my-phone-standalone::after,html 
           try {
             // 兜底球自己也带 .dmp-wrap，不能让它把「React 球是否在」的判断骗过去
             if (document.querySelector('.dmp-wrap:not(.dmp-fallback)')) return true
+            // widget.js（宿主注入的纯 DOM 球）在时绝不插兜底：否则屏幕上会有两颗
+            if (window.__dshMyPhoneWidget) return true
             const b = document.createElement('button')
             b.className = 'dmp-wrap dmp-fallback'
             b.setAttribute('aria-label', 'DSH 手机入口')
