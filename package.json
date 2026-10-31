@@ -51,10 +51,10 @@
   "title": "DSH My Phone",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ssyin158/dsh-my-phone.git"
+    "url": "git+https://github.com/ssy-in/dsh-my-phone.git"
   },
-  "homepage": "https://github.com/ssyin158/dsh-my-phone#readme",
+  "homepage": "https://github.com/ssy-in/dsh-my-phone#readme",
   "bugs": {
-    "url": "https://github.com/ssyin158/dsh-my-phone/issues"
+    "url": "https://github.com/ssy-in/dsh-my-phone/issues"
   }
 }
