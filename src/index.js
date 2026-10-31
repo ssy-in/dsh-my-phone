@@ -607,7 +607,7 @@ function applyBody(ctx) {
     }
   })()
 
-  // 宿主 Web UI 里的原生设置卡片（settings.plugin.item 插槽）
+  // 面板接口（/__myphone/panel*、/__myphone/widget.js、/__myphone/icon*.png 等），供纯 DOM 弹窗调用
   const disposePanel = registerPanel(ctx, { state, gate, getAddresses: addresses, getQrBase: qrBase, sync })
 
   // 启动时自动收拾历史重复设备：老版本每扫一次就 addDevice，同型号手机会堆好几条。

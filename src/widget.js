@@ -6,8 +6,7 @@
  * 由宿主 index 注入一段内联脚本，脚本自己建 `<script src="/__myphone/widget.js">`，
  * 球和面板全由这段纯 DOM 代码自己维护 —— 不经过插槽、不经过 React，宿主换 DOM 也换不掉它。
  *
- * v1.5.0 起：弹窗也搬到这里。React 那份（client.js）保留作为后备，球被点开时仍会派发
- * `dsh-my-phone:open`；若 React 面板先接管（window.__dshMyPhoneOpened === true），这边就不重复开。
+ * v1.7.0 起：React 那份（client.js）已整个删除 —— 球和面板就是这里一份，没有后备、没有并存。
  */
 ;(function () {
   if (typeof window === 'undefined' || typeof document === 'undefined') return
@@ -16,10 +15,6 @@
 
   // 尺寸：跟旧版 React 球一致（宽 135、按紧裁图标比例 512×459 得高约 121）
   // v1.6.1 临时开关：true = 用纯 DOM 球与纯 DOM 弹窗（v1.5.0 那套）；
-  // false = 交回 React 那套（用户说的「原来的界面」）。
-  // 现在用户要把旧界面调出来做逐项对照，所以默认 false。改回 true 只需动这一行。
-  var USE_DOM_UI = true
-
   var TILE = 135
   var RATIO = 459 / 512
   var W = TILE
@@ -98,7 +93,7 @@
   }
 
     // ---------- 音效设置 ----------
-  // 键沿用旧版：dsh-my-phone.sound.v2 = { on:{join,msg,approval}, volume, timbre }
+  // 存在 dsh-my-phone.sound.v2：{ hover, click, bubble, volume, timbre }（旧版的 on:{join,msg,approval} 不再读）
   var SOUND_KEY = 'dsh-my-phone.sound.v2'
   var TIMBRES = [
     ['bell', '风铃'],
@@ -109,54 +104,133 @@
     ['piano', '钢琴'],
     ['violin', '小提琴'],
   ]
+  // 三个开关：滑入滑出音 / 点击音 / 气泡音，默认全开
+  var SOUND_DEFAULT = { hover: true, click: true, bubble: true, volume: 100, timbre: 'bell' }
+
   function sound() {
-    var def = { on: { join: true, msg: true, approval: true }, volume: 100, timbre: 'bell' }
+    var out = {
+      hover: SOUND_DEFAULT.hover,
+      click: SOUND_DEFAULT.click,
+      bubble: SOUND_DEFAULT.bubble,
+      volume: SOUND_DEFAULT.volume,
+      timbre: SOUND_DEFAULT.timbre,
+    }
     try {
       var raw = window.localStorage && window.localStorage.getItem(SOUND_KEY)
-      if (!raw) return def
+      if (!raw) return out
       var j = JSON.parse(raw) || {}
-      return {
-        on: Object.assign(def.on, j.on || {}),
-        volume: typeof j.volume === 'number' ? j.volume : def.volume,
-        timbre: TIMBRES.some(function (x) {
-          return x[0] === j.timbre
-        })
-          ? j.timbre
-          : def.timbre,
-      }
+      ;['hover', 'click', 'bubble'].forEach(function (k) {
+        if (typeof j[k] === 'boolean') out[k] = j[k]
+        // 老版本记的是 on:{approval,join,msg}，没这三个键就当「没设置过」= 开
+      })
+      if (typeof j.volume === 'number') out.volume = Math.max(0, Math.min(100, j.volume))
+      if (TIMBRES.some(function (x) { return x[0] === j.timbre })) out.timbre = j.timbre
     } catch (e) {
-      return def
+      /* 读不到就用默认 */
     }
+    return out
   }
+
   function saveSound(next) {
     try {
       window.localStorage && window.localStorage.setItem(SOUND_KEY, JSON.stringify(next))
     } catch (e) {
       /* 存不了就只在本次会话生效 */
     }
+    prep()
+  }
+
+  // 每次发声前把音量和音色同步给引擎（引擎可能是刚加载的、也可能被别人改过）
+  function prep() {
     var eng = window.__dshMyPhoneAudio
-    if (eng) {
-      try {
-        eng.setVolume(next.volume)
-        eng.setTimbre(next.timbre)
-      } catch (e) {
-        /* 引擎没准备好就算了 */
-      }
+    if (!eng) return null
+    var s = sound()
+    try {
+      if (typeof eng.setVolume === 'function') eng.setVolume(s.volume)
+      if (typeof eng.setTimbre === 'function') eng.setTimbre(s.timbre)
+    } catch (e) {
+      /* 引擎状态异常就别拦着 */
+    }
+    return eng
+  }
+
+  function eng() {
+    return window.__dshMyPhoneAudio || null
+  }
+
+  // 滑入 / 滑出：各一声短音
+  function playHover(kind) {
+    var s = sound()
+    if (!s.hover) return
+    var e = prep()
+    if (!e) return
+    try {
+      if (kind === 'out') e.leave()
+      else e.enter()
+    } catch (err) {
+      /* 忽略 */
     }
   }
-  function playLevel(level) {
-    var eng = window.__dshMyPhoneAudio
-    if (!eng) return
+
+  // 点击：按下、松手各一声短音
+  function playClick(kind) {
     var s = sound()
-    var ok = level === 0 ? s.on.approval : level === 1 ? s.on.join : s.on.msg
-    if (!ok) return
+    if (!s.click) return
+    var e = prep()
+    if (!e) return
     try {
-      eng.setVolume(s.volume)
-      eng.setTimbre(s.timbre)
-      if (level === 0) eng.alert()
-      else if (level === 2) eng.short()
-      else eng.notice()
-    } catch (e) {
+      if (kind === 'up') e.release()
+      else e.press()
+    } catch (err) {
+      /* 忽略 */
+    }
+  }
+
+  // 气泡音：按优先级 P0 五声长音 / P1 三声 / P2 两声
+  function playLevel(level) {
+    var s = sound()
+    if (!s.bubble) return
+    var e = prep()
+    if (!e) return
+    try {
+      if (level === 0) e.alert()
+      else if (level === 1) e.notice()
+      else e.short()
+    } catch (err) {
+      /* 忽略 */
+    }
+  }
+
+  // 音效引擎：独立脚本，拉到就能出声；拉不到就静音跑，不拦界面
+  var audioTries = 0
+  function loadAudio() {
+    if (window.__dshMyPhoneAudio) {
+      prep()
+      return
+    }
+    if (audioTries > 6) return
+    audioTries += 1
+    var old = document.getElementById('dmp-audio-js')
+    if (old) old.parentNode.removeChild(old)
+    var s = document.createElement('script')
+    s.id = 'dmp-audio-js'
+    s.src = '/__myphone/audio.js?v=2'
+    s.onload = function () {
+      prep()
+    }
+    s.onerror = function () {
+      setTimeout(loadAudio, 800)
+    }
+    ;(document.head || document.documentElement).appendChild(s)
+  }
+
+  // 第一次真点/真按之前浏览器不许出声，先摸摸它（拿不到就等下一次）
+  function unlockAudio() {
+    var e = prep()
+    if (!e) return
+    try {
+      if (typeof e.unlock === 'function') e.unlock()
+    } catch (err) {
       /* 忽略 */
     }
   }
@@ -164,27 +238,38 @@
   function soundRows() {
     var s = sound()
     var out = []
+
     var seg = h('div', { class: 'seg' })
     ;[
-      ['approval', '等待授权'],
-      ['join', '有人连入'],
-      ['msg', '新消息'],
+      ['hover', '滑入滑出音', 2],
+      ['click', '点击音', 2],
+      ['bubble', '气泡音', 0],
     ].forEach(function (kv) {
       seg.appendChild(
         h('button', {
-          class: s.on[kv[0]] ? 'on' : '',
-          text: (s.on[kv[0]] ? '🔔 ' : '🔇 ') + kv[1],
+          class: s[kv[0]] ? 'on' : '',
+          text: kv[1],
           onclick: function () {
             var n = sound()
-            n.on[kv[0]] = !n.on[kv[0]]
+            n[kv[0]] = !n[kv[0]]
             saveSound(n)
-            if (n.on[kv[0]]) playLevel(kv[0] === 'approval' ? 0 : kv[0] === 'join' ? 1 : 2)
+            if (n[kv[0]]) {
+              if (kv[0] === 'hover') playHover('in')
+              else if (kv[0] === 'click') playClick('down')
+              else playLevel(kv[2])
+            }
             render()
           },
         }),
       )
     })
-    out.push(h('div', { style: 'padding:6px 0 10px' }, [seg]))
+    out.push(h('div', { style: 'padding:6px 0 8px' }, [seg]))
+    out.push(
+      h('div', {
+        class: 'dmp-hint',
+        text: '滑入滑出音：鼠标进出各一声；点击音：按下、松手各一声；气泡音：P0 五声、P1 三声、P2 两声。',
+      }),
+    )
 
     var vol = h('input', { type: 'range', min: '0', max: '100', value: String(s.volume), style: 'flex:1;min-width:0' })
     var volTxt = h('span', {
@@ -198,7 +283,7 @@
       saveSound(n)
     })
     vol.addEventListener('change', function () {
-      playLevel(2)
+      playHover('in')
     })
     out.push(
       h('div', { class: 'row' }, [
@@ -208,40 +293,71 @@
       ]),
     )
 
-    var sel = h('select', {
-      style: 'flex:1;min-width:0;border:1px solid #cfe4ec;border-radius:8px;padding:6px 8px;font:12.5px/1.4 inherit;color:#0d2130;background:#fff',
-    })
-    TIMBRES.forEach(function (kv) {
-      var op = document.createElement('option')
-      op.value = kv[0]
-      op.textContent = kv[1]
-      if (kv[0] === s.timbre) op.selected = true
-      sel.appendChild(op)
-    })
-    sel.addEventListener('change', function (ev) {
-      var n = sound()
-      n.timbre = ev.target.value
-      saveSound(n)
-      var eng = window.__dshMyPhoneAudio
-      if (eng) {
-        try {
-          eng.setTimbre(n.timbre)
-          eng.preview(n.timbre)
-        } catch (e) {
-          /* 忽略 */
-        }
-      }
-    })
-    out.push(
-      h('div', { class: 'row' }, [
-        h('div', { style: 'font-size:12.5px;color:#43606f;width:34px', text: '音色' }),
-        sel,
-      ]),
-    )
-    out.push(
-      h('div', { class: 'dmp-hint', text: '只是提示音，不影响连接。第一次点过页面之后才会有声音（浏览器要求）。' }),
-    )
+    out.push(timbreRow(s))
+    out.push(h('div', { class: 'dmp-hint', text: '只是提示音，不影响连接。第一次点过页面之后才会有声音（浏览器要求）。' }))
     return out
+  }
+
+  // 音色：自绘下拉（原生 <select> 的列表是系统画的，改不了颜色）
+  function timbreRow(s) {
+    var btn = h('button', { class: 'pick' })
+    var list = h('div', { class: 'picklist' })
+    var open = false
+    var label = function (id) {
+      for (var i = 0; i < TIMBRES.length; i += 1) if (TIMBRES[i][0] === id) return TIMBRES[i][1]
+      return '卡林巴'
+    }
+    var paint = function () {
+      var cur = sound().timbre
+      btn.textContent = label(cur) + '  ▾'
+      list.textContent = ''
+      TIMBRES.forEach(function (kv) {
+        list.appendChild(
+          h('button', {
+            class: 'pickopt' + (kv[0] === cur ? ' on' : ''),
+            text: kv[1],
+            onclick: function (ev) {
+              ev.stopPropagation()
+              var n = sound()
+              n.timbre = kv[0]
+              saveSound(n)
+              open = false
+              list.style.display = 'none'
+              paint()
+              var e = prep()
+              if (e && typeof e.preview === 'function') {
+                try {
+                  e.preview(kv[0])
+                } catch (err) {
+                  /* 忽略 */
+                }
+              }
+            },
+          }),
+        )
+      })
+      list.style.display = open ? 'block' : 'none'
+    }
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation()
+      open = !open
+      paint()
+    })
+    list.addEventListener('click', function (ev) {
+      ev.stopPropagation()
+    })
+    document.addEventListener('pointerdown', function (ev) {
+      if (!open) return
+      if (list.contains(ev.target) || btn.contains(ev.target)) return
+      open = false
+      paint()
+    })
+    paint()
+    var wrap = h('div', { style: 'position:relative;flex:1;min-width:0' }, [btn, list])
+    return h('div', { class: 'row' }, [
+      h('div', { style: 'font-size:12.5px;color:#43606f;width:34px', text: '音色' }),
+      wrap,
+    ])
   }
 
   // ---------- 数据 ----------
@@ -265,24 +381,61 @@
     return '手机连 DSH · 点一下扫码'
   }
 
+  // 气泡内容按「原来那套信笺」取：等授权 / 新连接 / 默认
+  function bubbleCard() {
+    var feed = data && Array.isArray(data.feed) ? data.feed : []
+    var pend = null
+    for (var i = 0; i < feed.length; i++) {
+      if (feed[i] && feed[i].pending) {
+        pend = feed[i]
+        break
+      }
+    }
+    if (pend) {
+      var head = pend.title ? '【' + pend.title + '】' : ''
+      return {
+        tag: '等授权',
+        tagColor: '#C88A00',
+        main: [head, pend.text || '正在请求授权...'],
+        sign: '点一下看详情 · 在 DSH 里批准或拒绝',
+      }
+    }
+    for (var j = feed.length - 1; j >= 0; j--) {
+      if (feed[j] && feed[j].text) {
+        return { tag: '新连接', main: [feed[j].text], sign: '高级页·已配对设备里可断开' }
+      }
+    }
+    return { tag: '手机连接', main: ['点一下 · 手机扫码连 DSH'], sign: '' }
+  }
+
   function showBubble() {
     if (!bubble) return
-    // 跟旧版一样分三层：青字标题 / 墨字正文 / 灰字小提示
-    var txt = summary()
-    var isDefault = txt === '手机连 DSH · 点一下扫码'
+    var card = bubbleCard()
     bubble.textContent = ''
-    var t = document.createElement('div')
-    t.className = 't'
-    t.textContent = isDefault ? '手机连 DSH' : '最新消息'
-    var b = document.createElement('div')
-    b.className = 'b'
-    b.textContent = isDefault ? '点一下扫码或复制链接' : txt
-    var s = document.createElement('div')
-    s.className = 's'
-    s.textContent = isDefault ? '扫码后手机点一次「信任这台电脑」' : '点一下打开面板看全部'
-    bubble.appendChild(t)
-    bubble.appendChild(b)
-    bubble.appendChild(s)
+    bubble.style.cssText =
+      'position:fixed;z-index:2147483001;width:232px;padding:12px 16px 13px;border-radius:14px;' +
+      'background:#fff;border:1px solid rgba(64,208,208,.55);box-shadow:0 14px 34px rgba(6,24,36,.24);' +
+      'text-align:left;opacity:0;transform:translateY(-4px);transition:opacity .18s ease,transform .18s ease;pointer-events:none'
+    var tag = document.createElement('div')
+    tag.style.cssText =
+      'font:700 10.5px/1.4 system-ui,sans-serif;letter-spacing:.08em;color:' + (card.tagColor || '#0b7f8c')
+    tag.textContent = card.tag
+    bubble.appendChild(tag)
+    var main = document.createElement('div')
+    main.style.cssText = 'margin:7px 0 0;font:700 14px/1.45 system-ui,sans-serif;color:#0d2436'
+    ;(card.main || []).forEach(function (part, idx) {
+      var sp = document.createElement('span')
+      if (idx === 0 && card.tagColor && (card.main || []).length > 1) sp.style.color = card.tagColor
+      sp.textContent = part
+      main.appendChild(sp)
+    })
+    bubble.appendChild(main)
+    if (card.sign) {
+      var sign = document.createElement('div')
+      sign.style.cssText = 'margin:8px 0 0;font:400 11px/1.4 system-ui,sans-serif;color:#7d93a8;text-align:right'
+      sign.textContent = '—— ' + card.sign
+      bubble.appendChild(sign)
+    }
     bubble.style.opacity = '1'
     bubble.style.transform = 'translateY(0)'
     clearTimeout(bubbleTimer)
@@ -365,6 +518,7 @@
   }
 
   function boot() {
+    loadAudio()
     refresh()
     // 推送：SSE 到了就用它，断了退回 6 秒一次轮询
     try {
@@ -551,14 +705,26 @@
     bubble.style.opacity = '0'
     document.documentElement.appendChild(bubble)
 
-    el.addEventListener('pointerdown', onDown)
+    el.addEventListener('pointerdown', function (ev) {
+      unlockAudio()
+      playClick('down')
+      onDown(ev)
+    })
+    el.addEventListener('pointerup', function () {
+      playClick('up')
+    })
+    el.addEventListener('pointercancel', function () {
+      playClick('up')
+    })
     el.addEventListener('pointerenter', function (ev) {
       if (ev.pointerType && ev.pointerType !== 'mouse') return
+      playHover('in')
       el.classList.add('dmp-w-hover')
       clearTimeout(hoverTimer)
       hoverTimer = setTimeout(showBubble, 300)
     })
     el.addEventListener('pointerleave', function () {
+      playHover('out')
       el.classList.remove('dmp-w-hover')
       clearTimeout(hoverTimer)
       if (bubble && bubble.style.opacity === '1') hideBubble()
@@ -591,7 +757,7 @@
       /* 拉不到就算了，不影响功能 */
     }
 
-    // 纯 DOM 球就位后，让 React 那颗球让位（client.js 的 .dmp-widget-on .dmp-wrap{display:none}）
+    // 纯 DOM 球就位（v1.7.0：不再有 React 球要躲，这里只负责记住状态）
     try {
       document.documentElement.classList.add('dmp-widget-on')
     } catch (e) {
@@ -633,6 +799,11 @@
       '#dmp-panel .dmp-tabs{display:flex;gap:6px;padding:10px 16px 0;background:#fff}',
       '#dmp-panel .dmp-tab{border:0;background:transparent;color:#5c7284;font:600 13.5px/1 inherit;padding:9px 12px;border-radius:10px;cursor:pointer}',
       '#dmp-panel .dmp-tab.on{background:#e4f6fa;color:#0a5f75}',
+      '#dmp-panel .dmp-info{width:22px;height:22px;margin:9px 0 0 auto;padding:0;border-radius:50%;border:1px solid #cfe3ee;background:#f6fbfd;color:#3a7f95;font:800 12px/20px system-ui;cursor:pointer}',
+      '#dmp-panel .dmp-info.on{background:#0b7f8c;border-color:#0b7f8c;color:#fff}',
+      '#dmp-panel .dmp-infocard{margin:10px 0 2px;padding:10px 12px;border-radius:10px;background:#f2fbfe;border:1px solid #d3ecf4}',
+      '#dmp-panel .dmp-infotitle{font:800 12.5px/1.5 system-ui;color:#0d2436;margin-bottom:4px}',
+      '#dmp-panel .dmp-inforow{font:400 11.5px/1.62 system-ui;color:#3a587f;margin-top:3px}',
       '#dmp-panel .dmp-body{padding:14px 16px 18px;overflow:auto;flex:1 1 auto}',
       '#dmp-panel h4{margin:16px 0 8px;font-size:12.5px;font-weight:800;letter-spacing:.4px;color:#4a6478;text-transform:none}',
       '#dmp-panel h4:first-child{margin-top:2px}',
@@ -662,6 +833,20 @@
       '#dmp-panel .dmp-center{text-align:center}',
       '#dmp-panel .row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #eaf2f6}',
       '#dmp-panel .row:last-child{border-bottom:0}',
+      '#dmp-panel .seg{display:flex;gap:6px;flex-wrap:wrap}',
+      '#dmp-panel .seg button{border:1px solid #cfe3ee;background:#f6fbfd;color:#4b6b7d;font:600 12px/1 system-ui;padding:8px 10px;border-radius:9px;cursor:pointer}',
+      '#dmp-panel .seg button.on{background:#0b7f8c;border-color:#0b7f8c;color:#fff}',
+      '#dmp-panel .seg.sm{gap:5px}',
+      '#dmp-panel .seg.sm button{padding:6px 8px;font-size:11.5px}',
+      '#dmp-panel .dmp-q{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid #cfe3ee;background:#f6fbfd;color:#3a7f95;font:800 10px/14px system-ui;cursor:help;user-select:none}',
+      '#dmp-panel .dmp-q:hover{background:#e4f6fa;border-color:#8fd3e2}',
+      '#dmp-panel .dmp-infotip{position:fixed;z-index:2147483647;display:none;width:208px;padding:8px 10px;border-radius:10px;background:#0d2436;color:#eaf6ff;font:400 11.5px/1.55 system-ui;box-shadow:0 12px 26px rgba(6,24,36,.34);pointer-events:none}',
+      '#dmp-panel .pick{width:100%;text-align:left;border:1px solid #cfe4ec;border-radius:8px;padding:7px 9px;background:#fff;color:#0d2130;font:12.5px/1.4 system-ui;cursor:pointer}',
+      '#dmp-panel .pick:hover{border-color:#8fd3e2}',
+      '#dmp-panel .picklist{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:9;background:#fff;border:1px solid #cfe4ec;border-radius:10px;box-shadow:0 12px 28px rgba(8,38,56,.18);padding:4px;display:none}',
+      '#dmp-panel .pickopt{display:block;width:100%;text-align:left;border:0;background:transparent;color:#0d2130;font:12.5px/1.4 system-ui;padding:7px 9px;border-radius:7px;cursor:pointer}',
+      '#dmp-panel .pickopt:hover{background:#f1f9fc}',
+      '#dmp-panel .pickopt.on{background:#e4f6fa;color:#0a5f75;font-weight:700}',
       '#dmp-panel .row .grow{flex:1;min-width:0}',
       '#dmp-panel .row .name{font-size:13px;font-weight:700;color:#0d2130;word-break:break-all}',
       '#dmp-panel .row .meta{font-size:11.5px;color:#6b8394;margin-top:2px}',
@@ -774,6 +959,8 @@
     }
     function open() {
       root.style.display = 'flex'
+      tab = 'connect'
+      qrAutoAt = 0
       render()
       refresh()
       clearInterval(ticker)
@@ -797,17 +984,6 @@
       tabsBar.textContent = ''
       tabsBar.appendChild(tabBtn('connect', '连接'))
       tabsBar.appendChild(tabBtn('advanced', '高级'))
-    }
-
-    function qrBlock() {
-      var svg = data && data.qrSvg ? String(data.qrSvg) : ''
-      var left = data && data.ticketExpiresAt ? data.ticketExpiresAt - Date.now() : 0
-      var dead = !svg || left <= 0
-      var box = h('div', { class: 'dmp-qr' + (dead && svg ? ' dead' : '') })
-      if (svg) box.innerHTML = svg
-      else box.appendChild(h('div', { class: 'dmp-empty', text: '还没有二维码\n点下面的按钮生成' }))
-      if (svg && left <= 0) box.appendChild(h('div', { class: 'dmp-dead', text: '已失效' }))
-      return box
     }
 
     function connectPane() {
@@ -849,14 +1025,23 @@
       out.push(h('p', { class: 'dmp-sub', text: '扫码连接 DeepSeek Harness 桌面版' }))
       out.push(qrBlock())
       var left = data && data.ticketExpiresAt ? Math.max(0, data.ticketExpiresAt - Date.now()) : 0
+      // 点开就有一张；过期了自动补一张（同一个过期时间只补一次，不会打转）
+      var stamp = Number((data && data.ticketExpiresAt) || 0) || -1
+      if (left <= 0 && !qrMinting && qrAutoAt !== stamp) {
+        qrAutoAt = stamp
+        qrMinting = true
+        post('ticket', {}, function () {
+          qrMinting = false
+        })
+      }
       if (left > 0) {
         var mm = Math.floor(left / 60000)
         var ss = Math.floor((left % 60000) / 1000)
-        out.push(h('p', { class: 'dmp-ttl', text: mm + ':' + (ss < 10 ? '0' + ss : ss) + ' 后失效，到点需要手动再点一次' }))
+        out.push(h('p', { class: 'dmp-ttl', text: mm + ':' + (ss < 10 ? '0' + ss : ss) + ' 后失效，到点会自动换一张' }))
       } else if (data && data.qrSvg) {
-        out.push(h('p', { class: 'dmp-ttl dead', text: '已失效 —— 点下面的按钮换一个' }))
+        out.push(h('p', { class: 'dmp-ttl dead', text: '已失效，正在换一张…' }))
       } else {
-        out.push(h('p', { class: 'dmp-hint dmp-center', text: '二维码不会自动生成，点下面的按钮才有' }))
+        out.push(h('p', { class: 'dmp-hint dmp-center', text: '正在生成二维码…' }))
       }
       if (data && data.pairUrl) {
         var link = h('div', { class: 'dmp-link' }, [
@@ -908,23 +1093,60 @@
       ])
     }
 
-    function segRow(label, key, current, choices) {
-      var seg = h('div', { class: 'seg' })
+    function segRow(label, key, current, choices, small) {
+      var seg = h('div', { class: 'seg' + (small ? ' sm' : '') })
       choices.forEach(function (m) {
         seg.appendChild(
           h('button', {
             class: current === m ? 'on' : '',
-            text: m === 0 ? '不自动关' : m + ' 分钟',
+            text: m === 0 ? '不关' : m + ' 分',
             onclick: function () {
               post('autooff', { key: key, minutes: m })
             },
           }),
         )
       })
-      return h('div', { style: 'padding:8px 0;border-bottom:1px solid #eaf2f6' }, [
-        h('div', { style: 'margin-bottom:7px;font-size:12.5px;font-weight:700;color:#26485c', text: label }),
+      return h('div', { style: 'padding:2px 0 10px;border-bottom:1px solid #eaf2f6' }, [
+        h('div', { style: 'margin-bottom:5px;font-size:11.5px;color:#5c7284', text: label }),
         seg,
       ])
+    }
+
+    // 带「！」的区块标题：鼠标放上去在图标旁边弹一条小气泡说明
+    function h4i(title, tip) {
+      var row = h('h4', { style: 'display:flex;align-items:center;gap:6px' })
+      row.appendChild(document.createTextNode(title))
+      var icon = h('span', { class: 'dmp-q', text: '！' })
+      icon.addEventListener('pointerenter', function () {
+        showInfo(tip, icon)
+      })
+      icon.addEventListener('pointerleave', function () {
+        hideInfo()
+      })
+      row.appendChild(icon)
+      return row
+    }
+
+    var infoEl = null
+    var qrAutoAt = 0
+    var qrMinting = false
+    function showInfo(text, anchor) {
+      if (!infoEl) {
+        infoEl = h('div', { class: 'dmp-infotip' })
+        root.appendChild(infoEl)
+      }
+      infoEl.textContent = text
+      infoEl.style.display = 'block'
+      var r = anchor.getBoundingClientRect()
+      var w = 208
+      var left = Math.min(Math.max(8, r.right + 8), Math.max(8, window.innerWidth - w - 10))
+      var top = r.bottom + 6
+      if (top + 90 > window.innerHeight) top = Math.max(8, r.top - 8 - infoEl.offsetHeight)
+      infoEl.style.left = left + 'px'
+      infoEl.style.top = top + 'px'
+    }
+    function hideInfo() {
+      if (infoEl) infoEl.style.display = 'none'
     }
 
 
@@ -1127,6 +1349,10 @@
     }
 
     function advancedPane() {
+      return advancedPaneBody()
+    }
+
+    function advancedPaneBody() {
       if (remote) {
         var rOut = []
         var dev = remote.device || {}
@@ -1157,42 +1383,7 @@
       var lan = Boolean(data && data.lanEnabled)
       var tun = Boolean(data && data.tunnelEnabled)
       var out = []
-      out.push(h('h4', { text: '旧界面（截图用）' }))
-      out.push(
-        h('div', { class: 'row' }, [
-          h('div', { class: 'grow' }, [h('div', { class: 'meta', text: '打开 React 版弹窗做对比截图' })]),
-          h('button', {
-            class: 'mini',
-            text: '打开',
-            onclick: function (ev) {
-              var host = null
-              try {
-                host = ev && ev.currentTarget && ev.currentTarget.parentNode && ev.currentTarget.parentNode.parentNode
-              } catch (e) {
-                host = null
-              }
-              var box = document.createElement('div')
-              box.setAttribute('data-legacy', '1')
-              box.style.cssText = 'position:relative;width:0;height:0'
-              if (host) host.appendChild(box)
-              var ok = false
-              try {
-                ok = typeof window.__dshMyPhoneMountLegacy === 'function' && window.__dshMyPhoneMountLegacy(box)
-              } catch (e) {
-                ok = false
-              }
-              if (!ok) {
-                try {
-                  window.dispatchEvent(new CustomEvent('dsh-my-phone:open'))
-                } catch (e) {
-                  /* 忽略 */
-                }
-              }
-            },
-          }),
-        ]),
-      )
-      out.push(h('h4', { text: '入口' }))
+      out.push(h4i('入口', '局域网只在同一个 Wi-Fi 里能用；外网走 Cloudflare 中继，在外面也能连回来。两个都关 = 手机进不来。'))
       out.push(
         switchRow('局域网访问', lan ? '同一 Wi-Fi 下可用，不经第三方' : '关着（默认只用外网，一个码到处都能用）', lan, function () {
           post('toggle', { key: 'lan' })
@@ -1203,22 +1394,20 @@
           post('toggle', { key: 'tunnel' })
         }),
       )
-      out.push(h('h4', { text: '自动关闭入口' }))
-      out.push(segRow('外网通道', 'tunnel', Number(data && data.tunnelAutoOffMinutes) || 0, [0, 15, 30, 60, 120]))
-      out.push(segRow('局域网通道', 'lan', Number(data && data.lanAutoOffMinutes) || 0, [0, 15, 30, 60, 120]))
-      out.push(h('h4', { text: '消息' }))
+      out.push(segRow('自动关闭', 'tunnel', Number(data && data.tunnelAutoOffMinutes) || 0, [0, 30, 60, 90, 120], true))
+      out.push(h4i('消息', '新设备连入、会话等你授权、失败 / 重试、上下文到 80/90/95% 都会在这里留一条，点「知道了」清掉。'))
       feedRows().forEach(function (n) {
         out.push(n)
       })
-      out.push(h('h4', { text: '已配对设备' }))
+      out.push(h4i('已配对设备', '每台设备能单独信任 / 断开 / 删除，也能加备注。上限 8 台，满了要先删一台。'))
       deviceRows().forEach(function (n) {
         out.push(n)
       })
-      out.push(h('h4', { text: '音效' }))
+      out.push(h4i('音效', '只是提示音，不影响连接：滑入滑出、按下松手各一声短音；气泡音按优先级 P0 五声 / P1 三声 / P2 两声。'))
       soundRows().forEach(function (n) {
         out.push(n)
       })
-      out.push(h('h4', { text: '免打扰' }))
+      out.push(h4i('免打扰', '只关提示音，连接和扫码照常。静音期间消息仍会记进「消息」。'))
       out.push(
         h('div', { class: 'row' }, [
           h('div', { class: 'grow' }, [h('div', { class: 'name', text: '一键静音 30 分钟' }), h('div', { class: 'meta', text: data && data.muted ? '正在静音中' : '只影响提示音，不影响连接' })]),
@@ -1246,8 +1435,39 @@
       })
     }
 
-    window.addEventListener('dsh-my-phone:open', function () {
-      open()
+    // 面板内统一接线：任何按钮/分段/下拉都给声音（用委托，不用逐个绑）
+    function hitTarget(ev) {
+      var n = ev.target
+      while (n && n !== root) {
+        var tag = (n.tagName || '').toLowerCase()
+        if (tag === 'button' || tag === 'input' || (n.className || '').indexOf('dmp-tab') >= 0) return n
+        n = n.parentNode
+      }
+      return null
+    }
+    var lastHover = null
+    root.addEventListener('pointerover', function (ev) {
+      if (ev.pointerType && ev.pointerType !== 'mouse') return
+      var hit = hitTarget(ev)
+      if (!hit || hit === lastHover) return
+      lastHover = hit
+      playHover('in')
+    })
+    root.addEventListener('pointerout', function (ev) {
+      if (ev.pointerType && ev.pointerType !== 'mouse') return
+      var hit = hitTarget(ev)
+      if (!hit || !lastHover) return
+      if (hit === lastHover) {
+        lastHover = null
+        playHover('out')
+      }
+    })
+    root.addEventListener('pointerdown', function (ev) {
+      unlockAudio()
+      if (hitTarget(ev)) playClick('down')
+    })
+    root.addEventListener('pointerup', function (ev) {
+      if (hitTarget(ev)) playClick('up')
     })
 
     return {
@@ -1283,93 +1503,12 @@
   }
 
 
-// ---------- 纯色测试按钮（v1.6.5：把每一步都报到服务端，点不动也能查） ----------
-  function probeReport(stage, detail) {
-    try {
-      var body = JSON.stringify({
-        stage: String(stage || '').slice(0, 24),
-        detail: String(detail || '').slice(0, 150),
-        w: window.innerWidth,
-        h: window.innerHeight,
-        dpr: window.devicePixelRatio || 1,
-      })
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon('/__myphone/client-report', new Blob([body], { type: 'application/json' }))
-      } else {
-        void fetch('/__myphone/client-report', { method: 'POST', body: body, headers: { 'content-type': 'application/json' } })
-      }
-    } catch (e) {
-      /* 信标失败无所谓 */
-    }
-  }
-
-  function mountProbe() {
-    try {
-      var d = document.getElementById('dmp-probe')
-      if (d && document.contains(d)) return
-      d = document.createElement('button')
-      d.id = 'dmp-probe'
-      d.type = 'button'
-      d.textContent = '测试按钮 · 点我开面板'
-      d.style.cssText = [
-        'position:fixed', 'left:50%', 'top:10px', 'transform:translateX(-50%)',
-        'z-index:2147483647', 'background:#e11d48', 'color:#fff', 'border:0',
-        'border-radius:10px', 'padding:12px 18px', 'font:700 14px/1.2 system-ui,sans-serif',
-        'box-shadow:0 6px 18px rgba(225,29,72,.45)', 'cursor:pointer', 'max-width:86vw',
-      ].join(';')
-
-      var fired = false
-      var go = function (how) {
-        if (fired) return
-        fired = true
-        d.style.background = '#1f6feb'
-        d.textContent = '收到' + how + '…正在开'
-        probeReport('probe-down', how)
-        setTimeout(function () {
-          try {
-            openPanelDomOnly()
-            d.style.background = '#0a7a4b'
-            d.textContent = '已点开 · ' + new Date().toLocaleTimeString()
-            probeReport('probe-open-ok', 'panel=' + Boolean(panel))
-          } catch (e) {
-            var msg = (e && (e.message || String(e))) || '未知错误'
-            d.style.background = '#7f1d1d'
-            d.textContent = '报错：' + msg
-            probeReport('probe-open-err', msg)
-          }
-        }, 40)
-      }
-
-      d.addEventListener('pointerdown', function (ev) { try { ev.stopPropagation() } catch (e) {} go('按下') }, true)
-      d.addEventListener('click', function (ev) { try { ev.stopPropagation() } catch (e) {} go('点击') }, true)
-      d.addEventListener('touchend', function (ev) { try { ev.stopPropagation() } catch (e) {} go('触摸') }, true)
-      ;(document.body || document.documentElement).appendChild(d)
-
-      // 全页监听：确认点击事件到底有没有送到页面（用户点不动时靠这条查）
-      if (!window.__dmpProbeDoc) {
-        window.__dmpProbeDoc = true
-        window.addEventListener(
-          'pointerdown',
-          function (ev) {
-            var tgt = ev.target || {}
-            probeReport('probe-doc-down', (tgt.id || tgt.tagName || '?') + ' @' + Math.round(ev.clientX) + ',' + Math.round(ev.clientY))
-          },
-          true,
-        )
-      }
-    } catch (e) {
-      /* 不要抛到宿主 */
-    }
-  }
-
-  mountProbe()
 
   // ---------- 常驻看护 ----------
   function ensure() {
     try {
       if (!document.documentElement) return
       if (!el || !document.contains(el)) mount()
-      mountProbe()
     } catch (e) {
       /* 极端情况下不要抛到宿主 */
     }
@@ -1383,8 +1522,6 @@
     bubble.style.top = Math.round(Math.min(Math.max(8, r.top + H / 2 - 18), vh() - 70)) + 'px'
   }
   setInterval(placeBubble, 400)
-
-  if (!USE_DOM_UI) return // 暂停纯 DOM UI：这次先让 React 那套界面出场
 
   ensure()
   boot()

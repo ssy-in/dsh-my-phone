@@ -1,6 +1,6 @@
-// DSH My Phone — host half of the native settings card.
+// DSH My Phone — 面板接口（服务端一半）。
 //
-// The browser half (src/client.js) runs inside the DSH Web UI, so the routes we
+// The browser half (src/widget.js) runs inside the DSH Web UI, so the routes we
 // mount here live on the *host* web server: same origin, behind the same
 // browser-trust fence as everything else, and switched by the same rules the
 // plugin already follows (loopback only, no secrets in GET responses).
@@ -161,7 +161,7 @@ export function registerPanel(ctx, { state, gate, getAddresses, getQrBase = null
       approvals: gate.pendingApprovals?.() ?? [],
       alerts: gate.pendingAlerts?.() ?? [],
       // 允许在「高级」里选的空闲自动关闭档位
-      autoOffChoices: [0, 15, 30, 60, 120],
+      autoOffChoices: [0, 30, 60, 90, 120],
     }
   }
 
@@ -381,7 +381,7 @@ export function registerPanel(ctx, { state, gate, getAddresses, getQrBase = null
         try {
           const { minutes, key } = await readJson(req)
           const n = Number(minutes)
-          if (![0, 15, 30, 60, 120].includes(n)) return json(res, 400, { error: 'unknown minutes' })
+          if (![0, 15, 30, 60, 90, 120].includes(n)) return json(res, 400, { error: 'unknown minutes' })
           if (key === 'lan') state.patchSettings({ lanAutoOffMinutes: n })
           else if (key === 'tunnel') state.patchSettings({ tunnelAutoOffMinutes: n })
           else if (key === undefined || key === null || key === '') {

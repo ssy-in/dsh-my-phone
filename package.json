@@ -1,12 +1,11 @@
 {
   "name": "dsh-my-phone",
-  "version": "1.6.8",
+  "version": "1.7.3",
   "description": "在手机上继续用电脑上的 DeepSeek Harness —— 扫一次码，出门也能连回家里的会话。",
   "type": "module",
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./client": "./src/client.js",
     "./package.json": "./package.json"
   },
   "engines": {
@@ -15,12 +14,6 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.yml"
-    },
-    "client": {
-      "platform": "web",
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-slots"
-      ]
     },
     "manifestVersion": 1
   },

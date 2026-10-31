@@ -58,7 +58,7 @@ check('手机进得去 DSH 主界面', home.status === 200 && homeBody.length > 
 
 // 5. 前端 bundle 里有没有我们这版的新东西（判断「展示不出来」是代码还是缓存）
 const m = homeBody.match(/plugins\/\?\?dsh-my-phone\/client\.js[^"']*/)
-check('页面引到了我们的 client.js', Boolean(m), m ? m[0] : '没找到')
+check('页面引到了我们的 widget.js', Boolean(m), m ? m[0] : '没找到')
 if (m) {
   const bundle = await req(`${tunnelBase}/${m[0]}`, { headers: { cookie } })
   const js = await bundle.text()

@@ -1,8 +1,8 @@
 /**
  * DSH My Phone —— 音效引擎（纯 DOM，独立于 React）
  *
- * 从 client.js 里整块搬出来的：以前它写在 React 组件函数体里，组件一卸载音效就没了。
- * 现在谁都能用：widget.js 的音效设置面板、React 设置卡片，都走 window.__dshMyPhoneAudio。
+ * v1.6.0 从旧的 React 前端里整块搬出来的：以前它写在组件函数体里，组件一卸载音效就没了。
+ * 现在只有 widget.js 的弹窗用它，走 window.__dshMyPhoneAudio（单例，跨重渲染不丢）。
  * 浏览器要求先有用户交互才能出声，所以第一次点击时 resume 一次，拿不到就静默失败。
  */
 ;(function () {
@@ -300,6 +300,12 @@
         }
 
         return {
+          // 静默解锁：浏览器要求先有用户手势，这里只把上下文建起来并 resume，不发任何声
+          unlock() {
+            const c = get()
+            if (c && c.state === 'suspended') c.resume().catch(() => {})
+            return Boolean(c)
+          },
           setTimbre(t) {
             timbre = TIMBRES.some((x) => x.id === t) ? t : 'kalimba'
           },
