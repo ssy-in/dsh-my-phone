@@ -1,0 +1,7 @@
+# Bundle patch for dsh-my-phone.
+# Installed with `dsh plugin --profile <name> add <this directory>`.
+# `name` must be the resolvable Node module name (package.json name), not the
+# cordis registration name exported by src/index.js.
+- insert:
+    - id: dsh-my-phone
+      name: dsh-my-phone

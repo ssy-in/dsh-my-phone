@@ -1,0 +1,26 @@
+# deps
+node_modules/
+
+# local runtime artifacts (never commit)
+.dsh*/
+.demo-state/
+*.log
+*.log.1
+state.json
+state.json.bak
+state.json.bad-*
+*.bak
+*.tmp
+
+# test outputs
+test/*.png
+test/qr-*.json
+
+# os
+.DS_Store
+Thumbs.db
+
+# probe 产物（test/probes 下的一次性脚本运行时产生）
+test/probes/*.png
+test/probes/*.json
+test/probes/qr-*.json

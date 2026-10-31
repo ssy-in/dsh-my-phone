@@ -1,0 +1,67 @@
+{
+  "name": "dsh-my-phone",
+  "version": "1.3.3",
+  "description": "在手机上继续用电脑上的 DeepSeek Harness —— 扫一次码，出门也能连回家里的会话。",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    },
+    "manifestVersion": 1
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-ui-slots": {
+      "optional": true
+    }
+  },
+  "files": [
+    "src",
+    "cordis.yml",
+    "icon.svg",
+    "icon.png",
+    "icon-96.png",
+    "icon-transparent.png",
+    "icon-tight.png",
+    "README.md",
+    "SECURITY.md",
+    "TESTING.md",
+    "LICENSE"
+  ],
+  "icon": "./icon.svg",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "remote",
+    "tunnel",
+    "mobile"
+  ],
+  "license": "MIT",
+  "author": "ssyin",
+  "title": "DSH My Phone",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ssyin158/dsh-my-phone.git"
+  },
+  "homepage": "https://github.com/ssyin158/dsh-my-phone#readme",
+  "bugs": {
+    "url": "https://github.com/ssyin158/dsh-my-phone/issues"
+  }
+}
