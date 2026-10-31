@@ -41,7 +41,7 @@ check('feed 有 pending', Array.isArray(feed.pending) && feed.pending.length ===
 check('pending 里是授权文案', /正在请求授权/.test(feed.pending[0].text), feed.pending[0].text)
 check('pending 带会话名（不带中括号）', feed.pending[0].name === '整理插件的悬浮球', String(feed.pending[0].name))
 check('feed 有 human', Array.isArray(feed.human) && feed.human.length === 3, `len=${feed.human.length}`)
-check('human 里有连接事件', feed.human.some((h) => h.kind === 'join' && /连进来了/.test(h.text)))
+check('human 里有连接事件', feed.human.some((h) => h.kind === 'join' && /刚连进来/.test(h.text)))
 check('human 里有入口自动关闭', feed.human.some((h) => h.kind === 'autooff'))
 check('human 里有地址变更', feed.human.some((h) => h.kind === 'tunnel'))
 check('human 里没有授权与扫描', !feed.human.some((h) => /正在请求授权|匿名扫描/.test(h.text)))

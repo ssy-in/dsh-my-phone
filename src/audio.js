@@ -17,6 +17,11 @@
   )
     return
 
+  // 音色清单：只用来做合法性校验（真正的发声分支在 voice() 里）
+  const TIMBRES = ['bell', 'kalimba', 'marimba', 'water', 'pop', 'piano', 'violin'].map((id) => ({ id }))
+  // 与 widget.js 共用同一个存档键，换音色/音量后引擎能立刻读到
+  const SOUND_KEY = 'dsh-my-phone.sound.v2'
+
   window.__dshMyPhoneAudio = (() => {
         let ctx = null
         let lastAt = 0

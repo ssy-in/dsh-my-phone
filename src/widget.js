@@ -15,7 +15,7 @@
 
   // 尺寸：跟旧版 React 球一致（宽 135、按紧裁图标比例 512×459 得高约 121）
   // v1.6.1 临时开关：true = 用纯 DOM 球与纯 DOM 弹窗（v1.5.0 那套）；
-  var TILE = 135
+  var TILE = 121
   var RATIO = 459 / 512
   var W = TILE
   var H = Math.round(TILE * RATIO)
@@ -264,12 +264,6 @@
       )
     })
     out.push(h('div', { style: 'padding:6px 0 8px' }, [seg]))
-    out.push(
-      h('div', {
-        class: 'dmp-hint',
-        text: '滑入滑出音：鼠标进出各一声；点击音：按下、松手各一声；气泡音：P0 五声、P1 三声、P2 两声。',
-      }),
-    )
 
     var vol = h('input', { type: 'range', min: '0', max: '100', value: String(s.volume), style: 'flex:1;min-width:0' })
     var volTxt = h('span', {
@@ -285,21 +279,41 @@
     vol.addEventListener('change', function () {
       playHover('in')
     })
+    var pickEl = timbreRow(s)
     out.push(
-      h('div', { class: 'row' }, [
-        h('div', { style: 'font-size:12.5px;color:#43606f;width:34px', text: '音量' }),
+      h('div', { class: 'row', style: 'display:flex;align-items:center;gap:8px' }, [
+        h('div', { style: 'font-size:12.5px;color:#43606f;flex:0 0 auto', text: '音色' }),
+        pickEl,
+        h('div', { style: 'font-size:12.5px;color:#43606f;flex:0 0 auto;margin-left:4px', text: '音量' }),
         vol,
         volTxt,
       ]),
     )
-
-    out.push(timbreRow(s))
     out.push(h('div', { class: 'dmp-hint', text: '只是提示音，不影响连接。第一次点过页面之后才会有声音（浏览器要求）。' }))
     return out
   }
 
   // 音色：自绘下拉（原生 <select> 的列表是系统画的，改不了颜色）
+  // 所有「点外面收起」的下拉共用一个 document 监听器（避免每次 render 都新挂一个）
+  var PICK_CLOSERS = []
+  var pickBound = false
+  function bindPickDoc() {
+    if (pickBound) return
+    pickBound = true
+    document.addEventListener('pointerdown', function (ev) {
+      for (var i = PICK_CLOSERS.length - 1; i >= 0; i -= 1) {
+        try {
+          PICK_CLOSERS[i](ev)
+        } catch (e) {
+          /* 单个下拉出错不影响别的 */
+        }
+      }
+    })
+  }
+
   function timbreRow(s) {
+    // 只当「控件工厂」用：真正的排布在音效区那行里（音色 [下拉] 音量 [滑块]）
+
     var btn = h('button', { class: 'pick' })
     var list = h('div', { class: 'picklist' })
     var open = false
@@ -346,16 +360,18 @@
     list.addEventListener('click', function (ev) {
       ev.stopPropagation()
     })
-    document.addEventListener('pointerdown', function (ev) {
+    bindPickDoc()
+    PICK_CLOSERS.push(function (ev) {
       if (!open) return
+      if (!btn.isConnected) return
       if (list.contains(ev.target) || btn.contains(ev.target)) return
       open = false
       paint()
     })
     paint()
-    var wrap = h('div', { style: 'position:relative;flex:1;min-width:0' }, [btn, list])
-    return h('div', { class: 'row' }, [
-      h('div', { style: 'font-size:12.5px;color:#43606f;width:34px', text: '音色' }),
+    var wrap = h('div', { style: 'position:relative;flex:0 0 auto;min-width:92px' }, [btn, list])
+    // 标签由外层 soundRows 提供，这里只出控件（以前两边各写一个「音色」）
+    return h('div', { class: 'row', style: 'border-bottom:0;padding:0;display:flex;align-items:center;gap:0' }, [
       wrap,
     ])
   }
@@ -382,68 +398,158 @@
   }
 
   // 气泡内容按「原来那套信笺」取：等授权 / 新连接 / 默认
+  // 气泡只说「最该说的那一条」：级别数字小的优先（P0 > P1 > P2），同级取最新。
+  // 标签/颜色/小字按级别与类型给，P0 琥珀、P1 橙、P2 青（与消息列表的色条一致）。
+  // 原版那套文案（v1.6 的 client.js）：新连接带设备名 + 时间；多张待授权写条数；单条把会话名上色
   function bubbleCard() {
-    var feed = data && Array.isArray(data.feed) ? data.feed : []
-    var pend = null
-    for (var i = 0; i < feed.length; i++) {
-      if (feed[i] && feed[i].pending) {
-        pend = feed[i]
-        break
+    var notices = data && Array.isArray(data.notices) ? data.notices : []
+    var last = notices[notices.length - 1]
+    if (last && last.label) {
+      return {
+        tag: '新连接',
+        meta: hhmm(last.at),
+        main: [{ t: last.label + '刚连进来' }],
+        sign: '高级页·已配对设备里可断开',
       }
     }
-    if (pend) {
-      var head = pend.title ? '【' + pend.title + '】' : ''
+    var appr = data && Array.isArray(data.approvals) ? data.approvals : []
+    if (appr.length > 1) {
+      var first = appr[appr.length - 1]
       return {
         tag: '等授权',
         tagColor: '#C88A00',
-        main: [head, pend.text || '正在请求授权...'],
+        meta: appr.length + ' 条',
+        main: [{ t: String(first.text || '正在请求授权...') }],
+        sign: '还有 ' + (appr.length - 1) + ' 条 · 点开消息看',
+      }
+    }
+    if (appr.length === 1) {
+      var one = appr[0]
+      var who = String(one.name || '').trim()
+      return {
+        tag: '等授权',
+        tagColor: '#C88A00',
+        main: who
+          ? [
+              { t: '【' + who + '】', c: '#C88A00' },
+              { t: '正在请求授权...' },
+            ]
+          : [{ t: String(one.text || '正在请求授权...') }],
         sign: '点一下看详情 · 在 DSH 里批准或拒绝',
       }
     }
-    for (var j = feed.length - 1; j >= 0; j--) {
-      if (feed[j] && feed[j].text) {
-        return { tag: '新连接', main: [feed[j].text], sign: '高级页·已配对设备里可断开' }
+    var u = Number((data && data.unread) || 0)
+    if (u > 0) {
+      return {
+        tag: '新连接',
+        meta: u + ' 台',
+        main: [{ t: '有 ' + u + ' 台设备刚连进来' }],
+        sign: '高级页·已配对设备里可断开',
       }
     }
-    return { tag: '手机连接', main: ['点一下 · 手机扫码连 DSH'], sign: '' }
+    return { tag: '手机连接', main: [{ t: '点一下 · 手机扫码连 DSH' }] }
   }
 
-  function showBubble() {
+  function showBubble(ms) {
     if (!bubble) return
     var card = bubbleCard()
+    var sig = JSON.stringify(card)
+    var already = bubble.style.opacity === '1'
+    if (sig === bubbleSig && already) {
+      // 内容没变、也还显示着：只校正位置，不重建 DOM，不重播动画
+      placeBubble()
+      return
+    }
+    bubbleSig = sig
     bubble.textContent = ''
     bubble.style.cssText =
-      'position:fixed;z-index:2147483001;width:232px;padding:12px 16px 13px;border-radius:14px;' +
-      'background:#fff;border:1px solid rgba(64,208,208,.55);box-shadow:0 14px 34px rgba(6,24,36,.24);' +
+      'position:fixed;z-index:2147483001;width:244px;padding:13px 17px 14px;border-radius:16px;' +
+      'background:#fff;border:1px solid rgba(26,111,224,.28);box-shadow:0 16px 38px rgba(6,24,36,.22);' +
       'text-align:left;opacity:0;transform:translateY(-4px);transition:opacity .18s ease,transform .18s ease;pointer-events:none'
-    var tag = document.createElement('div')
+    // 尖角（朝球那侧）
+    var tail = document.createElement('span')
+    tail.style.cssText =
+      'position:absolute;top:var(--tail-y,22px);width:9px;height:9px;background:#fff;border:1px solid rgba(26,111,224,.28);' +
+      'transform:rotate(45deg)'
+    tail.style[bubbleSide === 'right' ? 'left' : 'right'] = '-5px'
+    bubble.appendChild(tail)
+    var head = document.createElement('div')
+    head.style.cssText = 'display:flex;align-items:center;gap:8px'
+    var tag = document.createElement('span')
     tag.style.cssText =
-      'font:700 10.5px/1.4 system-ui,sans-serif;letter-spacing:.08em;color:' + (card.tagColor || '#0b7f8c')
+      'font:800 10.5px/1.4 system-ui,sans-serif;letter-spacing:.1em;color:' + (card.tagColor || '#1a6fe0')
     tag.textContent = card.tag
-    bubble.appendChild(tag)
+    head.appendChild(tag)
+    if (card.meta) {
+      var metaEl = document.createElement('span')
+      metaEl.style.cssText = 'margin-left:auto;font:700 10.5px/1.4 system-ui,sans-serif;color:#9aa9b8'
+      metaEl.textContent = card.meta
+      head.appendChild(metaEl)
+    }
+    bubble.appendChild(head)
+    var hair = document.createElement('div')
+    hair.style.cssText = 'margin:6px 0 0;height:1px;background:linear-gradient(90deg,rgba(26,111,224,.18),rgba(26,111,224,0))'
+    bubble.appendChild(hair)
     var main = document.createElement('div')
-    main.style.cssText = 'margin:7px 0 0;font:700 14px/1.45 system-ui,sans-serif;color:#0d2436'
-    ;(card.main || []).forEach(function (part, idx) {
+    main.style.cssText = 'margin:9px 0 0;font:700 14px/1.5 system-ui,sans-serif;color:#0d2436'
+    ;(card.main || []).forEach(function (part) {
       var sp = document.createElement('span')
-      if (idx === 0 && card.tagColor && (card.main || []).length > 1) sp.style.color = card.tagColor
-      sp.textContent = part
+      var piece = part && typeof part === 'object' ? part : { t: String(part == null ? '' : part) }
+      if (piece.c) sp.style.color = piece.c
+      sp.textContent = piece.t
       main.appendChild(sp)
     })
     bubble.appendChild(main)
     if (card.sign) {
       var sign = document.createElement('div')
-      sign.style.cssText = 'margin:8px 0 0;font:400 11px/1.4 system-ui,sans-serif;color:#7d93a8;text-align:right'
+      sign.style.cssText = 'margin:10px 0 0;font:400 11px/1.4 system-ui,sans-serif;color:#7d93a8;text-align:right'
       sign.textContent = '—— ' + card.sign
       bubble.appendChild(sign)
     }
-    bubble.style.opacity = '1'
-    bubble.style.transform = 'translateY(0)'
+    placeBubble()
+    if (!already) {
+      bubble.style.opacity = '1'
+      bubble.style.transform = 'translateY(0)'
+    }
     clearTimeout(bubbleTimer)
-    bubbleTimer = setTimeout(hideBubble, 4500)
+    if (ms !== 0) bubbleTimer = setTimeout(hideBubble, ms == null ? 4500 : ms)
+  }
+
+  // 事件驱动：快照里出现「新的」待处理或新消息时主动弹一次气泡（P0 常驻，等人在面板里点掉）
+  var lastBubbleKey = ''
+  function autoBubble() {
+    var feed = data && Array.isArray(data.feed) ? data.feed : []
+    var top = null
+    for (var i = 0; i < feed.length; i++) {
+      if (feed[i] && feed[i].pending) {
+        top = feed[i]
+        break
+      }
+    }
+    if (!top) {
+      for (var j = feed.length - 1; j >= 0; j--) {
+        if (feed[j] && feed[j].text) {
+          top = feed[j]
+          break
+        }
+      }
+    }
+    if (!top) return
+    try {
+      if (panel && panel.isOpen && panel.isOpen()) return
+    } catch (e) {
+      /* 忽略 */
+    }
+    var key = String(top.seq == null ? '' : top.seq) + '|' + String(top.text || '')
+    if (key === lastBubbleKey) return
+    lastBubbleKey = key
+    showBubble(top.pending ? 0 : 4500)
+    playLevel(top.pending ? 0 : top.level == null ? 2 : top.level)
   }
 
   function hideBubble() {
     if (!bubble) return
+    bubbleSig = ''
     bubble.style.opacity = '0'
   }
 
@@ -454,10 +560,16 @@
           return r && r.ok ? r.json() : null
         })
         .then(function (json) {
-          if (!json) return
+          if (!json) {
+            // 手机上管理口够不着：公网口对这个路径回 404（不是网络错误），
+            // 以前这里直接 return → 手机永远看不到「手机形态」。
+            loadRemote()
+            return
+          }
           remote = null // 管理口又能连上了：回到本地可写模式
           data = json
           paint()
+          autoBubble()
           if (panel && panel.isOpen()) panel.render()
         })
         .catch(function () {
@@ -514,7 +626,9 @@
         dot.style.display = 'none'
       }
     }
-    if (bubble && bubble.style.opacity === '1') bubble.textContent = summary()
+    // 以前这里是每秒 textContent = summary()，纯文本覆写会让排版跳一下（隐约闪烁）。
+    // 现在交给 showBubble 统一渲染，内容指纹没变就完全不动 DOM。
+    if (bubble && bubble.style.opacity === '1') showBubble()
   }
 
   function boot() {
@@ -529,6 +643,7 @@
           if (!json) return
           data = json
           paint()
+          autoBubble()
           if (panel && panel.isOpen()) panel.render()
         } catch (e) {
           /* 帧坏了就算了，等下一帧 */
@@ -799,6 +914,7 @@
       '#dmp-panel .dmp-tabs{display:flex;gap:6px;padding:10px 16px 0;background:#fff}',
       '#dmp-panel .dmp-tab{border:0;background:transparent;color:#5c7284;font:600 13.5px/1 inherit;padding:9px 12px;border-radius:10px;cursor:pointer}',
       '#dmp-panel .dmp-tab.on{background:#e4f6fa;color:#0a5f75}',
+      '#dmp-panel .dmp-warn{margin:10px 0 2px;padding:9px 11px;border-radius:10px;background:#fff8e8;border:1px solid #f3e0b0;color:#b45309;font:700 12.5px/1.5 system-ui}',
       '#dmp-panel .dmp-info{width:22px;height:22px;margin:9px 0 0 auto;padding:0;border-radius:50%;border:1px solid #cfe3ee;background:#f6fbfd;color:#3a7f95;font:800 12px/20px system-ui;cursor:pointer}',
       '#dmp-panel .dmp-info.on{background:#0b7f8c;border-color:#0b7f8c;color:#fff}',
       '#dmp-panel .dmp-infocard{margin:10px 0 2px;padding:10px 12px;border-radius:10px;background:#f2fbfe;border:1px solid #d3ecf4}',
@@ -808,16 +924,16 @@
       '#dmp-panel h4{margin:16px 0 8px;font-size:12.5px;font-weight:800;letter-spacing:.4px;color:#4a6478;text-transform:none}',
       '#dmp-panel h4:first-child{margin-top:2px}',
       '#dmp-panel .dmp-hint{margin:6px 0 0;font-size:12px;color:#5f7688;line-height:1.6}',
-      '#dmp-panel .dmp-lead{margin:0;font-size:14.5px;font-weight:800;color:#0a5f75}',
-      '#dmp-panel .dmp-sub{margin:3px 0 0;font-size:12.5px;color:#5f7688}',
-      '#dmp-panel .dmp-qr{margin:12px auto 0;width:214px;height:214px;background:#fff;border:1px solid #dbeaf1;border-radius:16px;',
+      '#dmp-panel .dmp-lead{margin:16px 0 0;font-size:15px;font-weight:800;color:var(--ink);letter-spacing:.01em}',
+      '#dmp-panel .dmp-sub{margin:5px 0 0;font-size:12.5px;color:var(--ink3)}',
+      '#dmp-panel .dmp-qr{margin:16px auto 0;width:214px;height:214px;background:#fff;border:1px solid #dbeaf1;border-radius:16px;',
       '  display:flex;align-items:center;justify-content:center;padding:9px;position:relative}',
       '#dmp-panel .dmp-qr svg{width:100%;height:100%;display:block}',
       '#dmp-panel .dmp-qr.dead{filter:grayscale(1) opacity(.42)}',
       '#dmp-panel .dmp-dead{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;',
       '  font:800 15px/1 inherit;color:#c0271b;background:rgba(255,255,255,.72);border-radius:16px;letter-spacing:2px}',
       '#dmp-panel .dmp-empty{color:#7b8fa1;font-size:12.5px;text-align:center;padding:56px 10px}',
-      '#dmp-panel .dmp-ttl{margin:8px 0 0;text-align:center;font:700 12.5px/1.5 ui-monospace,Menlo,monospace;color:#0a7a4b}',
+      '#dmp-panel .dmp-ttl{margin:10px 0 0;text-align:center;font:700 12.5px/1.5 ui-monospace,Menlo,monospace;color:#0a7a4b}',
       '#dmp-panel .dmp-ttl.dead{color:#c0271b}',
       '#dmp-panel .dmp-link{display:flex;gap:8px;align-items:center;margin-top:12px;background:#eef5f9;border:1px solid #dceaf1;border-radius:11px;padding:8px 10px}',
       '#dmp-panel .dmp-link code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
@@ -838,9 +954,80 @@
       '#dmp-panel .seg button.on{background:#0b7f8c;border-color:#0b7f8c;color:#fff}',
       '#dmp-panel .seg.sm{gap:5px}',
       '#dmp-panel .seg.sm button{padding:6px 8px;font-size:11.5px}',
-      '#dmp-panel .dmp-q{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid #cfe3ee;background:#f6fbfd;color:#3a7f95;font:800 10px/14px system-ui;cursor:help;user-select:none}',
-      '#dmp-panel .dmp-q:hover{background:#e4f6fa;border-color:#8fd3e2}',
-      '#dmp-panel .dmp-infotip{position:fixed;z-index:2147483647;display:none;width:208px;padding:8px 10px;border-radius:10px;background:#0d2436;color:#eaf6ff;font:400 11.5px/1.55 system-ui;box-shadow:0 12px 26px rgba(6,24,36,.34);pointer-events:none}',
+      '#dmp-panel .dmp-q{position:relative;display:inline-flex;align-items:center;justify-content:center;width:11px;height:11px;padding:0;border-radius:50%;border:0;background:linear-gradient(145deg,#7fd9e6,#2aa7bb);color:#fff;cursor:help;user-select:none;box-shadow:0 1px 2px rgba(11,127,140,.32);flex:0 0 auto;vertical-align:middle}',
+      '#dmp-panel .dmp-q svg{width:7px;height:7px;display:block;pointer-events:none}',
+      '#dmp-panel .dmp-q::before{content:"";position:absolute;inset:-9px;border-radius:50%}',
+      '#dmp-panel .dmp-q:hover{filter:brightness(1.08)}',
+      // ---- v1.8.0 视觉提升（统一 token，覆盖上面的旧值） ----
+      '#dmp-panel{--ink:#0d2436;--ink2:#43606f;--ink3:#7d93a8;--line:#e3eef4;--line2:#eef6fa;--brand:#1a6fe0;--brand2:#0e8fa8;--soft:#f5f9ff}',
+      '#dmp-panel .dmp-card{border-radius:22px;box-shadow:0 30px 80px rgba(6,24,36,.34);animation:dmp-pop .22s cubic-bezier(.22,1.2,.36,1)}',
+      '@keyframes dmp-pop{from{opacity:0;transform:translateY(10px) scale(.975)}to{opacity:1;transform:none}}',
+      '#dmp-panel .dmp-title{font:800 15px/1.3 system-ui;color:var(--ink);letter-spacing:.01em}',
+      '#dmp-panel .dmp-tabs{gap:4px;border-bottom:1px solid var(--line2)}',
+      '#dmp-panel .dmp-tab{position:relative;transition:color .16s ease,background .16s ease}',
+      '#dmp-panel .dmp-tab:hover{color:#20455a}',
+      '#dmp-panel .dmp-tab.on::after{content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:2px;border-radius:2px;background:var(--brand)}',
+      '#dmp-panel h4{margin:20px 0 6px;font:800 11.5px/1 system-ui;color:var(--ink3);letter-spacing:.1em;text-transform:uppercase;display:flex;align-items:center;gap:5px}',
+      '#dmp-panel h4 .dmp-q{align-self:center;margin:0}',
+      '#dmp-panel h4::before{content:"";width:3px;height:11px;border-radius:2px;background:linear-gradient(180deg,var(--brand2),var(--brand));flex:0 0 auto}',
+      '#dmp-panel h4:first-child{margin-top:8px}',
+      '#dmp-panel .dmp-lead{font:800 16.5px/1.35 system-ui;color:var(--ink);letter-spacing:.01em}',
+      '#dmp-panel .dmp-sub{margin-top:2px;color:var(--ink3)}',
+      '#dmp-panel .dmp-body{padding-bottom:6px}',
+      '#dmp-panel .row{border-bottom-color:var(--line2);transition:background .14s ease}',
+      '#dmp-panel .name{font:600 13px/1.4 system-ui;color:var(--ink)}',
+      '#dmp-panel .meta{font:400 11.5px/1.5 system-ui;color:var(--ink3)}',
+      '#dmp-panel button{transition:transform .12s ease,box-shadow .18s ease,background .16s ease,border-color .16s ease}',
+      '#dmp-panel button:active{transform:scale(.97)}',
+      '#dmp-panel .primary:not(.btn),#dmp-panel .btn.big{background:linear-gradient(145deg,#1f7bf0,#1358c8);border:0;color:#fff;font:800 14px/1.2 system-ui;padding:12px 16px;border-radius:12px;box-shadow:0 12px 24px rgba(26,111,224,.28)}',
+      '#dmp-panel .primary:not(.btn):hover,#dmp-panel .btn.big:hover{box-shadow:0 14px 28px rgba(11,127,140,.34);transform:translateY(-1px)}',
+      '#dmp-panel .mini,#dmp-panel .btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:30px;padding:0 12px;border-radius:9px;border:1px solid var(--line);background:#fff;color:var(--ink2);font:700 12px/1 system-ui;cursor:pointer;transition:background .15s ease,border-color .15s ease,color .15s ease,box-shadow .15s ease}',
+      '#dmp-panel .btn:hover,#dmp-panel .mini:hover{border-color:#c9e2ef;background:#f7fbfd}',
+      '#dmp-panel .btn.primary{background:linear-gradient(145deg,#1f7bf0,#1358c8);border-color:transparent;color:#fff;box-shadow:0 6px 14px rgba(26,111,224,.24)}',
+      '#dmp-panel .btn.warn{border-color:#f2cf9a;background:#fff9f0;color:#b45309}',
+      '#dmp-panel .btn.warn:hover{background:#fff4e3}',
+      '#dmp-panel .btn.danger{border-color:#f0c3bd;background:#fff7f6;color:#c0271b}',
+      '#dmp-panel .btn.danger:hover{background:#ffefed}',
+      '#dmp-panel .btn.ghost{border-color:transparent;background:transparent;color:var(--ink3)}',
+      '#dmp-panel .dmp-input{flex:1;min-width:0;height:30px;padding:0 10px;border-radius:9px;border:1px solid #dcebf2;background:#fff;font:12.5px/1 system-ui;color:var(--ink);outline:none}',
+      '#dmp-panel .dmp-input:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(26,111,224,.12)}',
+      '#dmp-panel .dmp-input::placeholder{color:#a8bccb}',
+      '#dmp-panel .mini:hover{background:var(--soft);border-color:#bfe4ee}',
+      '#dmp-panel .pill{border-radius:999px;font:700 11.5px/1 system-ui}',
+      '#dmp-panel .dmp-link{border:1px solid var(--line);background:var(--soft);border-radius:10px;padding:8px 10px}',
+      '#dmp-panel .dmp-link code{font:12px/1.5 ui-monospace,Menlo,monospace;color:var(--ink2);font-variant-numeric:tabular-nums}',
+      '#dmp-panel .dmp-ttl{font-variant-numeric:tabular-nums;letter-spacing:.02em}',
+      '#dmp-panel .dmp-qr{border-radius:14px;box-shadow:0 10px 24px rgba(6,24,36,.10);border:1px solid var(--line)}',
+      '#dmp-panel .dmp-hint{color:var(--ink3)}',
+      '#dmp-panel *::-webkit-scrollbar{width:8px;height:8px}',
+      '#dmp-panel *::-webkit-scrollbar-thumb{background:#d6e6ee;border-radius:999px}',
+      '#dmp-panel *::-webkit-scrollbar-thumb:hover{background:#bcdfea}',
+      '#dmp-panel *::-webkit-scrollbar-track{background:transparent}',
+      '#dmp-w-dot{animation:dmp-pulse 1.8s ease-in-out infinite}',
+      '@keyframes dmp-pulse{0%,100%{box-shadow:0 0 0 0 rgba(224,48,48,.55)}50%{box-shadow:0 0 0 6px rgba(224,48,48,0)}}',
+      '#dmp-panel input[type=range]{-webkit-appearance:none;appearance:none;height:18px;background:transparent;cursor:pointer}',
+      '#dmp-panel input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:999px;background:linear-gradient(90deg,#40d0d0,#0b7f8c)}',
+      '#dmp-panel input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-5px;border-radius:50%;background:#fff;border:2px solid #0b7f8c;box-shadow:0 2px 6px rgba(6,40,50,.25)}',
+      '#dmp-panel input[type=range]::-moz-range-track{height:4px;border-radius:999px;background:#cfe9ef}',
+      '#dmp-panel input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #0b7f8c}',
+      '#dmp-w-img{transform-origin:50% 100%;transition:transform .34s cubic-bezier(.34,1.56,.64,1),box-shadow .34s ease}',
+      '#dsh-my-phone-widget:hover .dmp-w-img{transform:scale(1.24) translateY(0);box-shadow:0 26px 52px rgba(8,38,56,.38)}',
+      '#dsh-my-phone-widget:active .dmp-w-img{transform:scale(.9)}',
+      '#dsh-my-phone-widget{overflow:visible!important}',
+      '#dsh-my-phone-widget .dmp-w-img{backface-visibility:hidden}',
+      '#dmp-panel .feed{display:flex;flex-direction:column;gap:6px}',
+      '#dmp-panel .feed .it{position:relative;padding:8px 10px 8px 12px;border-radius:10px;background:#fbfdfe;border:1px solid var(--line2);transition:background .14s ease}',
+      '#dmp-panel .feed .it:hover{background:#f6fbfd}',
+      '#dmp-panel .feed .it::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:#cfe3ee}',
+      '#dmp-panel .feed .it.p1::before{background:#e06c00}',
+      '#dmp-panel .feed .it.p0::before{background:#c88a00}',
+      '#dmp-panel .feed .it.p0{background:#fffdf6;border-color:#f2e6c4}',
+      '#dmp-panel .feed .it.p1{background:#fff9f3;border-color:#f6ddc6}',
+      '#dmp-panel .feed .it .tx{font:600 12.5px/1.5 system-ui;color:var(--ink)}',
+      '#dmp-panel .feed .it .tm{font:400 11px/1.5 system-ui;color:var(--ink3);font-variant-numeric:tabular-nums}',
+      '#dmp-panel .feed .it .mini{margin-top:6px}',
+      '#dmp-panel .dmp-infotip{position:fixed;z-index:2147483647;display:none;width:214px;padding:10px 12px;border-radius:12px;background:#fff;color:var(--ink);border:1px solid #dfeaf1;font:400 11.5px/1.6 system-ui;box-shadow:0 14px 30px rgba(6,24,36,.16);pointer-events:none}',
+      '#dmp-panel .dmp-infotip::before{content:"";position:absolute;left:-4px;top:12px;width:7px;height:7px;background:#fff;border-left:1px solid #dfeaf1;border-bottom:1px solid #dfeaf1;transform:rotate(45deg)}',
       '#dmp-panel .pick{width:100%;text-align:left;border:1px solid #cfe4ec;border-radius:8px;padding:7px 9px;background:#fff;color:#0d2130;font:12.5px/1.4 system-ui;cursor:pointer}',
       '#dmp-panel .pick:hover{border-color:#8fd3e2}',
       '#dmp-panel .picklist{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:9;background:#fff;border:1px solid #cfe4ec;border-radius:10px;box-shadow:0 12px 28px rgba(8,38,56,.18);padding:4px;display:none}',
@@ -850,12 +1037,15 @@
       '#dmp-panel .row .grow{flex:1;min-width:0}',
       '#dmp-panel .row .name{font-size:13px;font-weight:700;color:#0d2130;word-break:break-all}',
       '#dmp-panel .row .meta{font-size:11.5px;color:#6b8394;margin-top:2px}',
-      '#dmp-panel .pill{border:0;cursor:pointer;border-radius:999px;font:700 11.5px/1 inherit;padding:7px 11px}',
-      '#dmp-panel .pill.on{background:#0a7a4b;color:#fff}',
-      '#dmp-panel .pill.off{background:#e6eef3;color:#4a6478}',
-      '#dmp-panel .pill.hot{background:#c0271b;color:#fff}',
-      '#dmp-panel .seg{display:flex;gap:4px;flex-wrap:wrap}',
-      '#dmp-panel .seg button{border:1px solid #d8e7ee;background:#fff;color:#43606f;font:700 11.5px/1 inherit;padding:6px 9px;border-radius:8px;cursor:pointer}',
+      '#dmp-panel .pill{display:inline-flex;align-items:center;justify-content:center;height:30px;padding:0 13px;border:1px solid transparent;cursor:pointer;border-radius:9px;font:800 12px/1 system-ui;transition:background .15s ease,color .15s ease,box-shadow .15s ease,transform .1s ease}',
+      '#dmp-panel .pill:active{transform:scale(.97)}',
+      '#dmp-panel .pill.on{background:#0a7a4b;color:#fff;box-shadow:0 6px 14px rgba(10,122,75,.22)}',
+      '#dmp-panel .pill.off{background:#eef4f8;color:#43606f;border-color:#dceaf1}',
+      '#dmp-panel .pill.off:hover{background:#e6eff6}',
+      '#dmp-panel .pill.hot{background:#c0271b;color:#fff;box-shadow:0 6px 14px rgba(192,39,27,.22)}',
+      '#dmp-panel .seg{display:flex;gap:5px;flex-wrap:wrap}',
+      '#dmp-panel .seg button{display:inline-flex;align-items:center;justify-content:center;height:30px;min-width:44px;border:1px solid #d8e7ee;background:#fff;color:#43606f;font:700 12px/1 system-ui;padding:0 11px;border-radius:9px;cursor:pointer;transition:background .14s ease,border-color .14s ease,color .14s ease,transform .1s ease}',
+      '#dmp-panel .seg button:active{transform:scale(.97)}',
       '#dmp-panel .seg button.on{background:#e4f6fa;border-color:#a8d9e5;color:#0a5f75}',
       '#dmp-panel .feed{border-left:3px solid #cfdde6;padding-left:10px;margin:4px 0 0}',
       '#dmp-panel .feed .it{padding:6px 0}',
@@ -958,10 +1148,19 @@
       if (ev.key === 'Escape') close()
     }
     function open() {
+      hideBubble()
+      hideInfo()
       root.style.display = 'flex'
       tab = 'connect'
       qrAutoAt = 0
       render()
+      // 打开时如果手里那张已经过期（或压根没有），自动补一张；页面开着期间不再自动轮换
+      try {
+        var exp = data && data.ticketExpiresAt ? Number(data.ticketExpiresAt) : 0
+        if (!exp || exp <= Date.now()) post('ticket', {})
+      } catch (e) {
+        /* 忽略 */
+      }
       refresh()
       clearInterval(ticker)
       ticker = setInterval(render, 1000)
@@ -986,6 +1185,18 @@
       tabsBar.appendChild(tabBtn('advanced', '高级'))
     }
 
+    // 二维码块：有票就画 svg，没票给占位；过期盖「已失效」
+    function qrBlock() {
+      var svg = data && data.qrSvg ? String(data.qrSvg) : ''
+      var left = data && data.ticketExpiresAt ? data.ticketExpiresAt - Date.now() : 0
+      var dead = !svg || left <= 0
+      var box = h('div', { class: 'dmp-qr' + (dead && svg ? ' dead' : '') })
+      if (svg) box.innerHTML = svg
+      else box.appendChild(h('div', { class: 'dmp-empty', text: '还没有二维码\n点下面的按钮生成' }))
+      if (svg && left <= 0) box.appendChild(h('div', { class: 'dmp-dead', text: '已失效' }))
+      return box
+    }
+
     function connectPane() {
       var out = []
       if (remote) {
@@ -1002,7 +1213,7 @@
           h('div', { class: 'dmp-link' }, [
             h('code', { text: String(location.href) }),
             h('button', {
-              class: 'mini',
+              class: 'btn',
               text: '复制',
               onclick: function () {
                 copyText(String(location.href))
@@ -1021,33 +1232,30 @@
         )
         return out
       }
-      out.push(h('p', { class: 'dmp-lead', text: '相机或者浏览器扫码连接' }))
-      out.push(h('p', { class: 'dmp-sub', text: '扫码连接 DeepSeek Harness 桌面版' }))
       out.push(qrBlock())
+      out.push(h('p', { class: 'dmp-lead dmp-center', text: '相机或者浏览器扫码连接' }))
+      out.push(h('p', { class: 'dmp-sub dmp-center', text: '扫码连接 DeepSeek Harness 桌面版' }))
       var left = data && data.ticketExpiresAt ? Math.max(0, data.ticketExpiresAt - Date.now()) : 0
-      // 点开就有一张；过期了自动补一张（同一个过期时间只补一次，不会打转）
-      var stamp = Number((data && data.ticketExpiresAt) || 0) || -1
-      if (left <= 0 && !qrMinting && qrAutoAt !== stamp) {
-        qrAutoAt = stamp
-        qrMinting = true
-        post('ticket', {}, function () {
-          qrMinting = false
-        })
-      }
+      // v1.8.5：不再自动换票 —— 过期就让它显示「已失效」，只等人手动点按钮
       if (left > 0) {
         var mm = Math.floor(left / 60000)
         var ss = Math.floor((left % 60000) / 1000)
-        out.push(h('p', { class: 'dmp-ttl', text: mm + ':' + (ss < 10 ? '0' + ss : ss) + ' 后失效，到点会自动换一张' }))
+        out.push(
+          h('p', {
+            class: 'dmp-ttl',
+            text: mm + ':' + (ss < 10 ? '0' + ss : ss) + ' 后失效 · 过期后手动换一张',
+          }),
+        )
       } else if (data && data.qrSvg) {
-        out.push(h('p', { class: 'dmp-ttl dead', text: '已失效，正在换一张…' }))
-      } else {
-        out.push(h('p', { class: 'dmp-hint dmp-center', text: '正在生成二维码…' }))
+        out.push(h('p', { class: 'dmp-ttl dead', text: '二维码已失效 —— 点下面的按钮换一个' }))
+      } else if (!(data && data.qrSvg)) {
+        out.push(h('p', { class: 'dmp-hint dmp-center', text: '点下面的按钮生成一张' }))
       }
       if (data && data.pairUrl) {
         var link = h('div', { class: 'dmp-link' }, [
           h('code', { text: data.pairUrl }),
           h('button', {
-            class: 'mini',
+            class: 'btn',
             text: '复制',
             onclick: function () {
               copyText(data.pairUrl)
@@ -1089,7 +1297,7 @@
     function switchRow(label, sub, on, onToggle) {
       return h('div', { class: 'row' }, [
         h('div', { class: 'grow' }, [h('div', { class: 'name', text: label }), h('div', { class: 'meta', text: sub })]),
-        h('button', { class: 'pill ' + (on ? 'on' : 'off'), text: on ? '已开启 · 关' : '关着 · 开', onclick: onToggle }),
+        h('button', { class: 'pill ' + (on ? 'on' : 'off'), text: on ? '已开启' : '已关闭', onclick: onToggle }),
       ])
     }
 
@@ -1116,7 +1324,12 @@
     function h4i(title, tip) {
       var row = h('h4', { style: 'display:flex;align-items:center;gap:6px' })
       row.appendChild(document.createTextNode(title))
-      var icon = h('span', { class: 'dmp-q', text: '！' })
+      var icon = h('span', { class: 'dmp-q', title: '' })
+      icon.innerHTML =
+        '<svg viewBox="0 0 12 12" aria-hidden="true">' +
+        '<rect x="4.6" y="2" width="2.8" height="5.1" rx="1.4" fill="#fff"/>' +
+        '<circle cx="6" cy="9.4" r="1.5" fill="#fff"/>' +
+        '</svg>'
       icon.addEventListener('pointerenter', function () {
         showInfo(tip, icon)
       })
@@ -1138,9 +1351,9 @@
       infoEl.textContent = text
       infoEl.style.display = 'block'
       var r = anchor.getBoundingClientRect()
-      var w = 208
-      var left = Math.min(Math.max(8, r.right + 8), Math.max(8, window.innerWidth - w - 10))
-      var top = r.bottom + 6
+      var w = 214
+      var left = Math.min(Math.max(8, r.right + 10), Math.max(8, window.innerWidth - w - 10))
+      var top = Math.min(Math.max(8, r.top - 2), Math.max(8, window.innerHeight - infoEl.offsetHeight - 12))
       if (top + 90 > window.innerHeight) top = Math.max(8, r.top - 8 - infoEl.offsetHeight)
       infoEl.style.left = left + 'px'
       infoEl.style.top = top + 'px'
@@ -1164,17 +1377,24 @@
       list.forEach(function (d) {
         var name = (d.note ? d.note + '（' + d.label + '）' : d.label) || '设备'
         var row = h('div', { class: 'row' }, [
-          h('div', { class: 'grow' }, [
-            h('div', { class: 'name', text: name }),
+          h('div', { class: 'grow', style: 'flex:1;min-width:0' }, [
+            h('div', {
+              class: 'name',
+              style: 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis',
+              text: name,
+            }),
             h('div', { class: 'meta', text: (d.trusted ? '已信任' : '未信任') + (d.lastSeen ? ' · 最近 ' + hhmm(d.lastSeen) : '') }),
           ]),
         ])
+        // 按钮组必须先建（原来声明在 if 分支后面，备注一进编辑态就 ReferenceError → 整页被清空）
+        var actions = h('div', { style: 'display:flex;align-items:center;gap:6px;flex:0 0 auto' })
+        row.appendChild(actions)
         if (editId === d.id) {
           var input = h('input', {
             value: editText,
             maxlength: '24',
             placeholder: '比如：嘉然今天吃什么',
-            style: 'flex:1;min-width:0;border:1px solid #cfe4ec;border-radius:8px;padding:6px 8px;font:12.5px/1.4 inherit;color:#0d2130',
+            class: 'dmp-input',
           })
           input.addEventListener('input', function (ev) {
             editText = ev.target.value
@@ -1195,10 +1415,10 @@
               /* 忽略 */
             }
           }, 0)
-          row.appendChild(input)
-          row.appendChild(
+          actions.appendChild(input)
+          actions.appendChild(
             h('button', {
-              class: 'mini',
+              class: 'btn primary',
               text: '保存',
               onclick: function () {
                 post('device', { id: d.id, note: editText })
@@ -1206,9 +1426,9 @@
               },
             }),
           )
-          row.appendChild(
+          actions.appendChild(
             h('button', {
-              class: 'mini',
+              class: 'btn ghost',
               text: '取消',
               onclick: function () {
                 editId = null
@@ -1219,9 +1439,9 @@
           out.push(row)
           return
         }
-        row.appendChild(
+        actions.appendChild(
           h('button', {
-            class: 'mini',
+            class: 'btn',
             text: '备注',
             onclick: function () {
               editId = d.id
@@ -1230,9 +1450,9 @@
             },
           }),
         )
-        row.appendChild(
+        actions.appendChild(
           h('button', {
-            class: 'mini',
+            class: 'btn ' + (d.trusted ? 'warn' : 'primary'),
             text: d.trusted ? '断开' : '信任',
             onclick: function () {
               post('device', { id: d.id, trusted: !d.trusted })
@@ -1240,11 +1460,11 @@
           }),
         )
         var armed = delArm.id === d.id && Date.now() - delArm.at < 4000
-        row.appendChild(
+        actions.appendChild(
           h('button', {
-            class: 'mini',
+            class: 'btn danger',
             text: armed ? '再点一次' : '删除',
-            style: armed ? 'border-color:#f0b4ad;color:#c0271b;background:#fff3f1' : '',
+            style: armed ? 'background:#ffe2dd;border-color:#e8a49b' : '',
             onclick: function () {
               if (!armed) {
                 delArm = { id: d.id, at: Date.now() }
@@ -1267,7 +1487,16 @@
     function feedRows() {
       var feed = data && Array.isArray(data.feed) ? data.feed : []
       var out = []
-      if (!feed.length) out.push(h('div', { class: 'dmp-hint', text: '暂时没有需要你看的消息。' }))
+      if (!feed.length) {
+        out.push(
+          h('div', {
+            class: 'dmp-hint',
+            text: '暂时没有需要你看的消息。',
+            style:
+              'margin:2px 0 4px;padding:14px 12px;text-align:center;border:1px dashed #d9e8f0;border-radius:10px;background:#fbfdfe',
+          }),
+        )
+      }
       var wrap = h('div', { class: 'feed' })
       feed.slice(0, 12).forEach(function (it) {
         var lv = Number(it.level) || 2
@@ -1278,7 +1507,7 @@
         if (it.pending) {
           line.appendChild(
             h('button', {
-              class: 'mini',
+              class: 'btn',
               text: '知道了',
               onclick: function () {
                 if (it.id && String(it.id).charAt(0) === 'a') post('ack', { ack: it.seq })
@@ -1302,7 +1531,7 @@
       ])
       head.appendChild(
         h('button', {
-          class: 'mini',
+          class: 'btn ghost',
           text: logOpen ? '收起' : '展开',
           onclick: function () {
             logOpen = !logOpen
@@ -1313,7 +1542,7 @@
       if (logOpen) {
         head.appendChild(
           h('button', {
-            class: 'mini',
+            class: 'btn',
             text: '复制日志',
             onclick: function () {
               var list = data && Array.isArray(data.events) ? data.events : []
@@ -1328,7 +1557,7 @@
         )
         head.appendChild(
           h('button', {
-            class: 'mini',
+            class: 'btn warn',
             text: '清空',
             onclick: function () {
               post('clear', {})
@@ -1383,17 +1612,38 @@
       var lan = Boolean(data && data.lanEnabled)
       var tun = Boolean(data && data.tunnelEnabled)
       var out = []
+      out.push(
+        h('div', {
+          class: 'dmp-warn',
+          text: '⚠ 不要把链接随便发给外人 —— 3 分钟内谁拿到都能点「信任」进来',
+        }),
+      )
       out.push(h4i('入口', '局域网只在同一个 Wi-Fi 里能用；外网走 Cloudflare 中继，在外面也能连回来。两个都关 = 手机进不来。'))
+      function addrLine(urlValue, hint) {
+        if (!urlValue) return h('div', { class: 'dmp-hint', style: 'padding:0 0 10px', text: hint })
+        return h('div', { class: 'dmp-link', style: 'margin:0 0 10px' }, [
+          h('code', { text: urlValue }),
+          h('button', {
+            class: 'btn',
+            text: '复制',
+            onclick: function () {
+              copyText(urlValue)
+            },
+          }),
+        ])
+      }
       out.push(
         switchRow('局域网访问', lan ? '同一 Wi-Fi 下可用，不经第三方' : '关着（默认只用外网，一个码到处都能用）', lan, function () {
           post('toggle', { key: 'lan' })
         }),
       )
+      out.push(addrLine(lan ? String((data && data.lanUrl) || '') : '', lan ? '地址还没起来，稍等一秒' : '打开后这里会给局域网地址'))
       out.push(
         switchRow('外网访问', tun ? '经 Cloudflare 中继，开着就能从外面连回来' : '关着（出门在外就连不上）', tun, function () {
           post('toggle', { key: 'tunnel' })
         }),
       )
+      out.push(addrLine(tun ? String((data && data.tunnelUrl) || '') : '', tun ? '隧道还在建，几秒后出现地址' : '打开后这里会给外网地址'))
       out.push(segRow('自动关闭', 'tunnel', Number(data && data.tunnelAutoOffMinutes) || 0, [0, 30, 60, 90, 120], true))
       out.push(h4i('消息', '新设备连入、会话等你授权、失败 / 重试、上下文到 80/90/95% 都会在这里留一条，点「知道了」清掉。'))
       feedRows().forEach(function (n) {
@@ -1407,19 +1657,7 @@
       soundRows().forEach(function (n) {
         out.push(n)
       })
-      out.push(h4i('免打扰', '只关提示音，连接和扫码照常。静音期间消息仍会记进「消息」。'))
-      out.push(
-        h('div', { class: 'row' }, [
-          h('div', { class: 'grow' }, [h('div', { class: 'name', text: '一键静音 30 分钟' }), h('div', { class: 'meta', text: data && data.muted ? '正在静音中' : '只影响提示音，不影响连接' })]),
-          h('button', {
-            class: 'pill ' + (data && data.muted ? 'on' : 'off'),
-            text: data && data.muted ? '已静音' : '静音',
-            onclick: function () {
-              post('quiet', { mutedUntil: data && data.muted ? 0 : Date.now() + 30 * 60000 })
-            },
-          }),
-        ]),
-      )
+      // 免打扰 / 一键静音整块已去掉（用户 2026-10-30：静音功能直接去掉）
       logRows().forEach(function (n) {
         out.push(n)
       })
@@ -1427,12 +1665,61 @@
     }
 
     function render() {
-      renderTabs()
-      body.textContent = ''
-      var nodes = tab === 'connect' ? connectPane() : advancedPane()
-      nodes.forEach(function (n) {
-        if (n) body.appendChild(n)
-      })
+      // 同一帧里被多次调用（点击 → post → SSE 帧）只真正画一次；
+      // 画面字段没变就跳过，避免每 6 秒整棵重建 DOM（按钮点下去像卡住）
+      if (renderQueued) return
+      renderQueued = true
+      var run = function () {
+        renderQueued = false
+        try {
+          var sig = fingerprint()
+          if (sig && sig === lastPaintSig) return
+          lastPaintSig = sig
+          var nodes = tab === 'connect' ? connectPane() : advancedPane()
+          // 新内容准备完毕才动旧 DOM：算的时候抛异常也不会把页面清成空白
+          renderTabs()
+          body.textContent = ''
+          nodes.forEach(function (n) {
+            if (n) body.appendChild(n)
+          })
+        } catch (e) {
+          /* 渲染失败不要连累宿主 */
+        }
+      }
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
+      else setTimeout(run, 0)
+    }
+    var renderQueued = false
+    var lastPaintSig = ''
+
+    // 只挑「会影响画面」的字段做指纹
+    function fingerprint() {
+      try {
+        var d = data || {}
+        return JSON.stringify([
+          d.lanEnabled,
+          d.tunnelEnabled,
+          d.tunnelUrl,
+          d.lanUrl,
+          d.pairUrl,
+          d.ticketExpiresAt,
+          d.tunnelAutoOffMinutes,
+          d.mutedUntil,
+          d.unread,
+          (d.deviceList || []).map(function (x) {
+            return [x.id, x.note, x.trusted, x.lastSeen].join('|')
+          }),
+          (d.feed || {}).pendingCount,
+          (d.events || []).length,
+          tab,
+          editId,
+          logOpen,
+          infoOpen,
+          sound(),
+        ])
+      } catch (e) {
+        return ''
+      }
     }
 
     // 面板内统一接线：任何按钮/分段/下拉都给声音（用委托，不用逐个绑）
@@ -1445,22 +1732,31 @@
       }
       return null
     }
-    var lastHover = null
+    // 面板内**不出滑动音**：面板每秒重渲染会换掉节点，任何基于节点的判断都会反复触发，
+    // 索性整块去掉（用户 2026-10-29 反馈「还是会一直响」）。球的滑入滑出音保留，点击音保留。
+    var HOVER_IN_PANEL = false
     root.addEventListener('pointerover', function (ev) {
+      if (!HOVER_IN_PANEL) return
       if (ev.pointerType && ev.pointerType !== 'mouse') return
-      var hit = hitTarget(ev)
-      if (!hit || hit === lastHover) return
-      lastHover = hit
-      playHover('in')
     })
-    root.addEventListener('pointerout', function (ev) {
-      if (ev.pointerType && ev.pointerType !== 'mouse') return
-      var hit = hitTarget(ev)
-      if (!hit || !lastHover) return
-      if (hit === lastHover) {
-        lastHover = null
-        playHover('out')
-      }
+    // 点一下立刻给反馈：先写「…」并变淡，真实数据回来时整块会重新渲染
+    root.addEventListener('click', function (ev) {
+      var n = ev.target
+      while (n && n !== root && (n.tagName || '').toLowerCase() !== 'button') n = n.parentNode
+      if (!n || n === root || n.disabled) return
+      var cls = String(n.className || '')
+      if (cls.indexOf('btn') < 0 && cls.indexOf('pill') < 0 && cls.indexOf('mini') < 0) return
+      if (cls.indexOf('on') >= 0 || cls.indexOf('off') >= 0) return
+      n.dataset.busy = '1'
+      if (!n.dataset.label) n.dataset.label = n.textContent || ''
+      n.textContent = '…'
+      n.style.opacity = '0.72'
+      setTimeout(function () {
+        if (!n.dataset.busy) return
+        n.dataset.busy = ''
+        n.textContent = n.dataset.label || ''
+        n.style.opacity = ''
+      }, 2500)
     })
     root.addEventListener('pointerdown', function (ev) {
       unlockAudio()
@@ -1513,15 +1809,6 @@
       /* 极端情况下不要抛到宿主 */
     }
   }
-
-  function placeBubble() {
-    if (!bubble || !el || bubble.style.opacity !== '1') return
-    var r = el.getBoundingClientRect()
-    var left = Math.min(Math.max(8, r.left - 120), Math.max(8, vw() - 268))
-    bubble.style.left = left + 'px'
-    bubble.style.top = Math.round(Math.min(Math.max(8, r.top + H / 2 - 18), vh() - 70)) + 'px'
-  }
-  setInterval(placeBubble, 400)
 
   ensure()
   boot()

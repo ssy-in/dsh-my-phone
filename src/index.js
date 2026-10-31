@@ -485,12 +485,7 @@ function applyBody(ctx) {
           // 结果回来（tool/result 同一个 callId）就等于回答完了 —— 按 callId 收掉气泡。
           if (event.type === 'tool/call') {
             const tool = String(event.toolName || '')
-            // 工具调用：同一会话 1 分钟记一条，只进技术日志，不打扰
-            const lastTool = toolLoggedAt.get(sid) || 0
-            if (Date.now() - lastTool > 60_000) {
-              toolLoggedAt.set(sid, Date.now())
-              gate.noteEvent?.('tool', `${title} 正在用 ${tool || '工具'}`)
-            }
+            // 普通工具调用不再记事件（用户 2026-10-30：使用工具也监听吗 不需要）
             if (/ask[_-]?user|AskUserQuestion/i.test(tool)) {
               gate.noteAlert?.('question', `【${title}】 正在等你回答...`, { ref: `ask:${callId}`, sticky: true })
               gate.noteEvent?.('question', `${title} 在等你回答（${tool}）`)

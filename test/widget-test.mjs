@@ -20,7 +20,7 @@ const check = (name, ok, extra = '') => {
 const src = fs.readFileSync(new URL('../src/widget.js', import.meta.url), 'utf8')
 check('widget.js 自带弹窗创建函数', src.includes('function createPanel()'))
 check('弹窗容器与样式都在 widget.js 里', src.includes("id: 'dmp-panel'") && src.includes('#dmp-panel .dmp-card'))
-check('球尺寸与旧版一致（135）', /var TILE = 135/.test(src))
+check('球尺寸（121，比原来小 10%）', /var TILE = 121/.test(src))
 check('悬停气泡仍在纯 DOM 里', src.includes('dmp-w-bubble'))
 check('不再用 window.open 兜底（Electron 会拦）', !src.includes("window.open('/__myphone/'"))
 check(

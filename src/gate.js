@@ -15,6 +15,11 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 const ICON_FILE = new URL('../icon.png', import.meta.url)
 const ICON96_FILE = new URL('../icon-96.png', import.meta.url)
 const ICON_FAB_FILE = new URL('../icon-tight.png', import.meta.url)
+// v1.8.3：手机端也要拿到悬浮球脚本与音效引擎。
+// 之前这两个文件只在宿主 web 服务器（回环）上有，手机走公网口时被 ADMIN 前缀的 404 拦掉，
+// 表现就是「手机上没有悬浮球 / 没有 logo」，桌面上却一切正常。
+const WIDGET_FILE = new URL('../src/widget.js', import.meta.url)
+const AUDIO_FILE = new URL('../src/audio.js', import.meta.url)
 
 /** 取异常信息的第一行：给错误页显示，不把堆栈糊到用户脸上。 */
 function firstLine(err) {
@@ -1327,6 +1332,23 @@ export function createGate({
         }
         return
       }
+      // 悬浮球脚本 / 音效引擎：手机端必须能拉到，否则球不出现
+      if (url.pathname === '/__myphone/widget.js' || url.pathname === '/__myphone/audio.js') {
+        const file = url.pathname.endsWith('audio.js') ? AUDIO_FILE : WIDGET_FILE
+        try {
+          const bytes = fs.readFileSync(file)
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'content-length': bytes.length,
+            // 不缓存：改了代码刷新页面就生效，省得手机一直跑旧脚本
+            'cache-control': 'no-store',
+          })
+          res.end(bytes)
+        } catch {
+          send(res, 404, errorPage('404', '脚本文件缺失'))
+        }
+        return
+      }
       if (url.pathname.startsWith(ADMIN)) {
         send(res, 404, errorPage('404', '页面不存在'))
         return
@@ -1448,7 +1470,7 @@ export function createGate({
         id: `j${n.seq}`,
         at: n.at,
         kind: 'join',
-        text: `${n.label}连进来了`,
+        text: `${n.label}刚连进来`,
         deviceId: n.id,
         seq: n.seq,
         // 首次连入 = 新设备（P0）；同一台再连 = 只是记录（P1）
