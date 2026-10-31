@@ -5,7 +5,9 @@
 ## 一、单元 / 回归测试（离线即可跑）
 
 ```bash
-node test/panel-test.js        # 面板 HTTP 接口 + 快照字段（27 项）
+node test/widget-test.mjs      # 悬浮球 / 弹窗 / 气泡的结构与文案（25 项）
+node test/widget-dom-test.mjs  # 假 DOM 里真跑 widget.js：挂载、气泡定位、队列、去重、消息卡（左上事件标签）、页签、文案与事件对得上、高频事件不弹、指纹不发空（40 项）
+node test/panel-test.js        # 面板 HTTP 接口 + 快照字段（29 项）
 node test/feed-test.mjs        # 消息中心三段流：非人记录 / 人做的事 / 待处理（29 项）
 node test/state-test.js        # state.json 读写、迁移、设备 upsert、静默设置（10 项）
 node test/approval-test.mjs    # 授权提醒：会话名、【】文案、合并、ack（19 项）
@@ -13,11 +15,10 @@ node test/passkey-test.mjs     # 长期凭据（第二把钥匙）：签发/校�
 node test/entry-test.mjs       # 扫码地址规则：外网开→https，关→IP，未就绪→pending（8 项）
 node test/alert-test.mjs       # 提醒分级：P0/P1/P2、合并窗口、静默（10 项）
 node test/modes-test.js        # 电脑/手机两种形态的判定与只读边界（13 项）
-node test/fab-geom-test.mjs    # 悬浮球几何：贴边、旋转、偏移换算（17 项）
 node test/icon-public-test.mjs # 公网口静态图标白名单（6 项）
+node test/public-assets-test.mjs # 公网口可以拿到的静态资源清单（5 项）
 node test/stale-host-test.js   # 旧隧道域名拦截（5 项）
 node test/sse-real.mjs         # 真 http.Server 上的 SSE 推送（4 项）
-node test/fab-lifecycle-test.mjs # 悬浮球生命周期的结构约束（容器引用 / 兜底球不掩盖恢复 / 巡检间隔）
 node test/tdz-scan.mjs         # 静态扫描：渲染路径上「先用后声明」的 const
 ```
 

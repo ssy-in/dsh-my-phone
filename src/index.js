@@ -241,7 +241,7 @@ function applyBody(ctx) {
         info.warned = true
         const mins = Math.round((now - info.at) / 60_000)
         gate.noteAlert?.('warn', `【${info.title}】 已经跑了 ${mins} 分钟`, { ref: `long:${sid}` })
-        gate.noteEvent?.('longrun', `${info.title} 一轮已经跑了 ${mins} 分钟还没结束`)
+        gate.noteEvent?.('longrun', `【${info.title}】 一轮已经跑了 ${mins} 分钟还没结束`)
       }
     } catch {
       /* 提醒失败不影响对话 */
@@ -423,7 +423,7 @@ function applyBody(ctx) {
             const now2 = modeOf.get(sid) || ''
             if (before && now2 && before !== now2) {
               gate.noteAlert?.('plan', `切换到了 【${title}】，当前是${modeLabel(now2)}`, { ref: `mode:${sid}` })
-              gate.noteEvent?.('plan', `会话切换：${title} 是 ${now2} 模式（上一个会话是 ${before}）`)
+              gate.noteEvent?.('plan', `会话切换：【${title}】 是 ${now2} 模式（上一个会话是 ${before}）`)
             }
           }
           if (sid) lastSid = sid
@@ -438,7 +438,7 @@ function applyBody(ctx) {
               const why = String((event.reason && event.reason.kind) || event.error || '未知原因')
               // v1.2.3：会话失败也弹气泡（P1 橙），消息中心同样记一条 P1
               gate.noteAlert?.('warn', `【${title}】 这一轮失败了`, { ref: `turnfail:${sid}` })
-              gate.noteEvent?.('turnfail', `${title} 这一轮失败：${why}`)
+              gate.noteEvent?.('turnfail', `【${title}】 这一轮失败：${why}`)
             }
             // 上下文用到 80% / 90% / 95% 时各提醒一次（压缩后会重置）
             const ratio = contextRatio(session)
@@ -448,20 +448,19 @@ function applyBody(ctx) {
               ctxWarned.set(sid, bucket)
               const pct = Math.round(ratio * 100)
               gate.noteAlert?.('warn', `【${title}】 上下文用到 ${pct}%`, { ref: `ctx:${sid}:${bucket}` })
-              gate.noteEvent?.('ctx', `${title} 的上下文已用 ${pct}%（${Math.round(bucket * 100)}% 提醒档）`)
+              gate.noteEvent?.('ctx', `【${title}】 的上下文已用 ${pct}%（${Math.round(bucket * 100)}% 提醒档）`)
             }
-            // 刚才重试过、这一轮又完成了 → 记一句「已恢复」，人就不用再回去确认
-            const retriedAt = retryAt.get(sid) || 0
-            if (retriedAt && Date.now() - retriedAt < 10 * 60_000) {
-              retryAt.delete(sid)
-              gate.noteEvent?.('retry', `${title} 重试后已恢复正常`)
-            }
+            // v1.8.24：这里原来会记一条「重试后已恢复正常」。用户要求去掉 ——
+            // 重试成功了就等于没出事，再弹一条只会让人白紧张一次（手机震了，
+            // 打开一看「已恢复」）。retry 现在只表示「正在重试」这一种含义。
+            // 注意不要清 retryAt：它同时是「正在重试」那条提示的 30 秒节流阀，
+            // 每轮完成就清掉会让同一轮里重复提示。
             // 每轮完成都记一条（P2 最近动态），同一会话 30 秒内只记一次
             const lastOk = toolLoggedAt.get(`ok:${sid}`) || 0
             const okNow = Date.now()
             if (okNow - lastOk > 30_000) {
               toolLoggedAt.set(`ok:${sid}`, okNow)
-              gate.noteEvent?.('turnok', `${title} 完成了一轮`)
+              gate.noteEvent?.('turnok', `【${title}】 完成了一轮`)
             }
             const device = gate.lastActiveDevice?.(90_000)
             if (!device) return // 这一轮是在电脑上敲的，不打扰
@@ -474,7 +473,7 @@ function applyBody(ctx) {
           if (event.type === 'approval/asked') {
             const tool = String(event.toolName || '')
             gate.noteApproval?.(session && session.id, title, tool, event.id)
-            gate.noteEvent?.('approval', `会话在等授权：${title || '(无标题会话)'}${tool ? ' · ' + tool : ''}`)
+            gate.noteEvent?.('approval', `会话在等授权：【${title || '(无标题会话)'}】${tool ? ' · ' + tool : ''}`)
             return
           }
           if (event.type === 'approval/decided') {
@@ -485,21 +484,20 @@ function applyBody(ctx) {
           // 结果回来（tool/result 同一个 callId）就等于回答完了 —— 按 callId 收掉气泡。
           if (event.type === 'tool/call') {
             const tool = String(event.toolName || '')
-            // v1.8.19：把「会话名 正在用 工具」加回来（用户要求），但**只进消息中心的
-            // 技术日志、不弹气泡** —— noteEvent 走的是记录通道，`tool` 也不在
-            // gate 的 HUMAN_KINDS 里，所以永远不会变成 P0/P1 气泡。
-            // 同一会话 60 秒记一条，免得一次任务刷出几十行。
+            // v1.8.19：把「会话名 正在用 工具」加回来（用户要求）。
+            // v1.8.22：这类技术动态也会弹气泡 + 响一声（用户要求「所有消息都弹窗和音效」），
+            // 但依旧不进红点 —— 红点只算要人判断的。同一会话 60 秒记一条，免得刷屏。
             if (tool) {
               const lastTool = toolLoggedAt.get(`tool:${sid}`) || 0
               const toolNow = Date.now()
               if (toolNow - lastTool > 60_000) {
                 toolLoggedAt.set(`tool:${sid}`, toolNow)
-                gate.noteEvent?.('tool', `${title || '(无标题会话)'} 正在用 ${tool}`)
+                gate.noteEvent?.('tool', `【${title || '(无标题会话)'}】 正在用 ${tool}`)
               }
             }
             if (/ask[_-]?user|AskUserQuestion/i.test(tool)) {
               gate.noteAlert?.('question', `【${title}】 正在等你回答...`, { ref: `ask:${callId}`, sticky: true })
-              gate.noteEvent?.('question', `${title} 在等你回答（${tool}）`)
+              gate.noteEvent?.('question', `【${title}】 在等你回答（${tool}）`)
             }
             return
           }
@@ -510,7 +508,7 @@ function applyBody(ctx) {
           // 上下文压缩：长会话会先整理再继续，这期间界面看着像卡住，给个气泡说明
           if (event.type === 'compaction/start') {
             gate.noteAlert?.('compaction', `【${title}】 正在整理上下文...`, { ref: `compact:${sid}`, sticky: true })
-            gate.noteEvent?.('compaction', `${title} 开始整理上下文`)
+            gate.noteEvent?.('compaction', `【${title}】 开始整理上下文`)
             return
           }
           if (event.type === 'compaction/end' || event.type === 'compaction/summary') {
@@ -521,7 +519,7 @@ function applyBody(ctx) {
           }
           if (event.type === 'compaction/summary-error') {
             gate.noteAlert?.('warn', `【${title}】 上下文压缩出错`, { ref: `compact:${sid}` })
-            gate.noteEvent?.('error', `${title} 上下文压缩出错`)
+            gate.noteEvent?.('error', `【${title}】 上下文压缩出错`)
             return
           }
           // 模式变了：权限 / 沙箱 / 审批 / 计划 / 模型，任意一个动就弹一句「当前 XX 模式：yy」。
@@ -530,12 +528,12 @@ function applyBody(ctx) {
           const mode = describeMode(event)
           if (mode) {
             gate.noteAlert?.('mode', `【${title}】 当前${mode.key}：${mode.label}`)
-            gate.noteEvent?.('mode', `${title} 的${mode.key}改为「${mode.label}」`)
+            gate.noteEvent?.('mode', `【${title}】 的${mode.key}改为「${mode.label}」`)
             return
           }
           if (event.type === 'session/model-unavailable') {
             gate.noteAlert?.('warn', `【${title}】 模型不可用`, { ref: `model:${sid}` })
-            gate.noteEvent?.('model', `${title} 模型不可用`)
+            gate.noteEvent?.('model', `【${title}】 模型不可用`)
             return
           }
           // 一次尝试没产出（失败 / 被取消 / 流断了）就落一条 assistant/attempt，
@@ -546,12 +544,12 @@ function applyBody(ctx) {
             if (now - last > 30_000) {
               retryAt.set(sid, now)
               gate.noteAlert?.('warn', `【${title}】 正在重试...`, { ref: `retry:${sid}` })
-              gate.noteEvent?.('retry', `${title} 的一次尝试没成功，正在重试`)
+              gate.noteEvent?.('retry', `【${title}】 的一次尝试没成功，正在重试`)
             }
             return
           }
           if (event.type === 'session/create') {
-            gate.noteEvent?.('session', `新会话：${title}`)
+            gate.noteEvent?.('session', `新会话：【${title}】`)
             return
           }
         } catch {
@@ -575,7 +573,7 @@ function applyBody(ctx) {
           const title = sessionTitleOf(session) || '某个会话'
           const msg = String((payload && payload.error && (payload.error.message || payload.error)) || '未知错误').slice(0, 120)
           gate.noteAlert?.('warn', `【${title}】 出错了`, { ref: `agenterr:${session && session.id}` })
-          gate.noteEvent?.('turnfail', `${title} 出错：${msg}`)
+          gate.noteEvent?.('turnfail', `【${title}】 出错：${msg}`)
         } catch {
           /* 通知失败不影响对话 */
         }
@@ -599,7 +597,7 @@ function applyBody(ctx) {
           const tool = String((request && request.toolName) || '')
           gate.noteApproval?.(session && session.id, title, tool, request && request.id)
           // 排查日志里留痕：钩子到底有没有被触发，一眼就能看见
-          gate.noteEvent?.('approval', `收到授权请求：${title || '(无标题会话)'}${tool ? ' · ' + tool : ''}`)
+          gate.noteEvent?.('approval', `收到授权请求：【${title || '(无标题会话)'}】${tool ? ' · ' + tool : ''}`)
         } catch {
           /* 只是通知，出错不影响授权流程本身 */
         }

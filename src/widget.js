@@ -36,8 +36,6 @@
   var state = null
   var data = null
   var remote = null // 手机上拿到的是只读快照（/__myphone/state）
-  var lastFeedAt = 0
-  var lastPending = 0
   var el = null
   var dot = null
   var bubble = null
@@ -52,6 +50,40 @@
   var bubbleSide = 'left'
   var bubbleTail = null
   var bubbleSticky = false
+  // v1.8.22 气泡队列：用户要求「所有消息都弹窗和音效」，而气泡一次只能显示一张，
+  // 所以新消息先入队，pumpBubble() 一张一张放，两条之间至少隔 BUBBLE_GAP 毫秒。
+  // 去重（v1.8.25 改）：一个 key 只要**还挂在候选列表里**就永远不再播。
+  // 原来按「45 秒后忘掉」来做，可消息本身还留在列表里（human 保留最近 40 条），
+  // 时间一到它就被当成新消息再弹一遍 —— 这就是「隔一会儿又弹之前弹过的气泡」。
+  var bubbleQueue = []
+  var bubbleBusy = false
+  var bubblePumpTimer = 0
+// 释放 bubbleBusy 的定时器单独一个变量：原来它和 bubblePumpTimer 共用，
+// pumpBubble() 一开始的 clearTimeout 会把「释放」也清掉 → busy 永远为 true，队列卡死。
+var bubbleBusyTimer = 0
+  var BUBBLE_GAP = 1400
+  var playedKeys = {}
+  var bubbleSeeded = false
+  // v1.8.21：消息卡的 NEW 标记。记住「上一次打开高级页的时间」，比它新的卡片才带 NEW。
+  // 存在 localStorage 里，刷新页面也不会重现已读的 NEW。
+  var FEED_SEEN_KEY = 'dsh-my-phone.feedSeen.v1'
+  var feedSeen = 0
+  try {
+    var _seen = window.localStorage && window.localStorage.getItem(FEED_SEEN_KEY)
+    if (_seen) feedSeen = Number(_seen) || 0
+  } catch (e) {
+    /* 存储坏了就当没读过 */
+  }
+  function markFeedSeen() {
+    feedSeen = Date.now()
+    try {
+      window.localStorage && window.localStorage.setItem(FEED_SEEN_KEY, String(feedSeen))
+    } catch (e) {
+      /* 存不了就只在本次会话生效 */
+    }
+    // 告诉服务端「这些通知已读」，红点随之清零
+    post('read', {})
+  }
 
   // ---------- 位置 ----------
   function load() {
@@ -415,6 +447,8 @@
           at: p.at,
           text: p.text,
           name: p.name,
+          // gate 的 pending 不带 kind（它就是授权），补上让气泡标签认得出
+          kind: 'approval',
           level: p.level == null ? 0 : p.level,
           pending: true,
         })
@@ -460,17 +494,12 @@
   // 气泡只说「最该说的那一条」：级别数字小的优先（P0 > P1 > P2），同级取最新。
   // 标签/颜色/小字按级别与类型给，P0 琥珀、P1 橙、P2 青（与消息列表的色条一致）。
   // 原版那套文案（v1.6 的 client.js）：新连接带设备名 + 时间；多张待授权写条数；单条把会话名上色
+  // v1.8.23：顺序改成「等授权 > 新连接」。原来先查 notices —— 只要还有一条**未读**
+  // 的连接通知（比如手机连进来后一直没打开面板点掉它）就直接返回「新连接」，
+  // 正排队等授权的会话被彻底盖住：用户截图里明明在等老大授权，气泡却写
+  // 「isis（iPhone）刚连进来」。未读通知会一直挂着，而授权是眼下真的在等人的事，
+  // 所以授权必须排在最前面，且标签与文案必须说清「在等授权」。
   function bubbleCard() {
-    var notices = data && Array.isArray(data.notices) ? data.notices : []
-    var last = notices[notices.length - 1]
-    if (last && last.label) {
-      return {
-        tag: '新连接',
-        meta: hhmm(last.at),
-        main: [{ t: last.label + '刚连进来' }],
-        sign: '高级页·已配对设备里可断开',
-      }
-    }
     var appr = data && Array.isArray(data.approvals) ? data.approvals : []
     if (appr.length > 1) {
       var first = appr[appr.length - 1]
@@ -497,16 +526,104 @@
         sign: '点一下看详情 · 在 DSH 里批准或拒绝',
       }
     }
+    // 授权都排完了，才轮到「有人连进来」这种纯通知（只报还没点掉的）
+    var notices = data && Array.isArray(data.notices) ? data.notices : []
+    var last = notices[notices.length - 1]
+    if (last && last.label) {
+      return {
+        tag: '新连接',
+        tagColor: '#1a6fe0',
+        meta: hhmm(last.at),
+        main: [{ t: last.label + '刚连进来' }],
+        sign: '高级页·已配对设备里可断开',
+      }
+    }
     var u = Number((data && data.unread) || 0)
     if (u > 0) {
       return {
         tag: '新连接',
+        tagColor: '#1a6fe0',
         meta: u + ' 台',
         main: [{ t: '有 ' + u + ' 台设备刚连进来' }],
         sign: '高级页·已配对设备里可断开',
       }
     }
     return { tag: '手机连接', main: [{ t: '点一下 · 手机扫码连 DSH' }] }
+  }
+
+  // 气泡标签按**事件种类**给，别只按级别给（v1.8.23）。
+  // 原来一律按 level 推标签：level 0 → 「要你决定」，于是「某台手机刚连进来」
+  // （gate 里首次连入也是 level 0）这种纯通知被写成「要你决定」，
+  // 而会话名在等授权反倒可能被写成「新消息」—— 标签和事件对不上，
+  // 用户一眼看过去就以为「你在让我决定什么？」。这里改成先认 kind，
+  // 认不出才退回级别文案。
+  var KIND_TAG = {
+    join: '新连接',
+    tunnel: '外网通道',
+    autooff: '入口自动关闭',
+    entry: '入口变更',
+    turnfail: '这一轮失败',
+    // retry 现在只有一种含义了：「xx 的一次尝试没成功，正在重试」。
+    // 原来同一个 kind 底下还有「重试后已恢复正常」，那种「其实没事了」的消息
+    // 弹出来只会让人白紧张一次，已经不再产生（v1.8.24），标签也就可以说清。
+    retry: '正在重试',
+    model: '模型不可用',
+    longrun: '跑得有点久',
+    ctx: '上下文用量',
+    turnok: '一轮完成',
+    approval: '等授权',
+    question: '等你回答',
+    compaction: '整理上下文',
+    error: '出错了',
+    mode: '模式切换',
+    plan: '会话切换',
+    session: '新会话',
+    device: '设备变动',
+    tool: '正在用工具',
+    client: '界面自检',
+    pair: '配对',
+    upstream: '上游不通',
+  }
+
+  // 日志里也用它把 kind 翻成人话（排查日志原来直接印 `tool` / `approval`
+  // 这种英文单词，跟旁边那句中文描述对不上，看着像两条不同的东西）
+  function kindLabel(kind) {
+    var k = String(kind || '')
+    return Object.prototype.hasOwnProperty.call(KIND_TAG, k) ? KIND_TAG[k] : k || '事件'
+  }
+
+  // 这些事件**只进消息列表和日志，不弹气泡、不响音**（v1.8.24）。
+  // `tool` 是「会话名 正在用 Read」这种，一个回合里能来十几条 ——
+  // 全弹的话手机隔一分钟震一次，真正的「等你授权」反而被淹掉。
+  // 排查的时候照样查得到（「消息/日志」页的技术动态里全都在）。
+  var NO_BUBBLE_KIND = { tool: true }
+  function bubbleSilent(kind) {
+    return Object.prototype.hasOwnProperty.call(NO_BUBBLE_KIND, String(kind || ''))
+  }
+
+  // 把一条消息渲染成气泡卡片（v1.8.22：气泡不再只报「最该说的那一条」，
+  // 而是每条消息各自弹一次；标签按事件种类给，颜色按级别给）
+  function cardFor(it) {
+    var lv = Number(it && it.level)
+    if (lv !== 0 && lv !== 1) lv = 2
+    var kind = String((it && it.kind) || '')
+    var known = Object.prototype.hasOwnProperty.call(KIND_TAG, kind) ? KIND_TAG[kind] : ''
+    var tag = it && it.pending
+      ? '等授权'
+      : known || (lv === 0 ? '要你决定' : lv === 1 ? '值得留意' : it && it.tech ? '技术动态' : '新消息')
+    var color = lv === 0 ? '#C88A00' : lv === 1 ? '#E06C00' : '#1a6fe0'
+    var main = []
+    var who = String((it && it.name) || '').trim()
+    // 待授权的消息把会话名放前面，让人一眼知道是哪条在等
+    if (who) main.push({ t: '【' + who + '】', c: color })
+    main.push({ t: String((it && it.text) || '') })
+    return {
+      tag: tag,
+      tagColor: color,
+      meta: hhmm(it && it.at),
+      main: main,
+      sign: it && it.pending ? '点开消息看详情 · 在 DSH 里批准或拒绝' : '点球打开「消息/日志」页',
+    }
   }
 
   /**
@@ -545,9 +662,9 @@
     }
   }
 
-  function showBubble(ms) {
+  function showBubble(ms, card) {
     if (!bubble) return
-    var card = bubbleCard()
+    if (!card) card = bubbleCard()
     var sig = JSON.stringify(card)
     var already = bubble.style.opacity === '1'
     if (sig === bubbleSig && already) {
@@ -610,46 +727,176 @@
     if (ms !== 0) bubbleTimer = setTimeout(hideBubble, ms == null ? 4500 : ms)
   }
 
-  // 事件驱动：快照里出现「新的」待处理或新消息时主动弹一次气泡（P0 常驻，等人在面板里点掉）
+  // 事件驱动：快照里出现「新的」消息时主动弹气泡（v1.8.22 起所有消息都弹：
+  // 人类消息、待授权、技术动态除外的高频事件；排队一条一条来）。
+  // 去重（v1.8.25）：一条消息只要播过，就永不再播 —— 见 autoBubble()。
   var lastBubbleKey = ''
-  function autoBubble() {
-    var feed = feedItems()
-    var top = null
-    for (var i = 0; i < feed.length; i++) {
-      if (feed[i] && feed[i].pending) {
-        top = feed[i]
-        break
+  // 最后一张气泡对应的是哪条消息：鼠标放上去时重画它，而不是退回兜底文案
+  var lastShownIt = null
+
+  // 把当前快照里所有「够格弹」的消息按时间正序摊出来
+  function bubbleCandidates() {
+    var out = []
+    var list = feedItems()
+    list = list.slice().sort(function (a, b) {
+      return (Number(a && a.at) || 0) - (Number(b && b.at) || 0)
+    })
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i]
+      if (!it || !it.text) continue
+      // 「xx 正在用 Read」这类频率太高，不弹气泡（只留在消息/日志页里）
+      if (bubbleSilent(it.kind)) continue
+      out.push({
+        key: 'f|' + String(it.seq == null ? '' : it.seq) + '|' + String(it.text),
+        at: it.at,
+        kind: it.kind,
+        level: it.level == null ? 2 : it.level,
+        pending: Boolean(it.pending),
+        name: it.name,
+        text: it.text,
+      })
+    }
+    var tech = data && data.feed && Array.isArray(data.feed.tech) ? data.feed.tech : []
+    for (var j = 0; j < tech.length; j++) {
+      var t = tech[j]
+      if (!t || !t.text) continue
+      if (bubbleSilent(t.kind)) continue
+      out.push({
+        key: 't|' + String(t.kind || '') + '|' + String(t.text),
+        at: t.at,
+        kind: t.kind,
+        level: 2,
+        pending: false,
+        tech: true,
+        text: t.text,
+      })
+    }
+    // 兜底：feed 还没准备好（老存档、gate 抽风、只读快照）时，
+    // 用 approvals / notices 顶上，免得一条路走死、永远等不到一次气泡
+    if (!out.length) {
+      var appr = data && Array.isArray(data.approvals) ? data.approvals : []
+      for (var k = 0; k < appr.length; k++) {
+        var a = appr[k]
+        if (!a) continue
+        out.push({
+          key: 'a|' + String(a.seq == null ? '' : a.seq) + '|' + String(a.text || ''),
+          at: a.at,
+          kind: 'approval',
+          level: 0,
+          pending: true,
+          name: a.name,
+          text: String(a.text || '正在请求授权...'),
+        })
+      }
+      var nts = data && Array.isArray(data.notices) ? data.notices : []
+      for (var m = 0; m < nts.length; m++) {
+        var n = nts[m]
+        if (!n || !n.label) continue
+        out.push({
+          key: 'n|' + String(n.at == null ? '' : n.at) + '|' + String(n.label),
+          at: n.at,
+          kind: 'join',
+          level: 2,
+          pending: false,
+          text: n.label + '刚连进来',
+        })
       }
     }
-    if (!top) {
-      for (var j = feed.length - 1; j >= 0; j--) {
-        if (feed[j] && feed[j].text) {
-          top = feed[j]
-          break
-        }
+    return out
+  }
+
+  // 忘掉「已经不在候选列表里」的 key（这条消息已经被挤出列表了，留着没意义）。
+  // 关键：**不再按时间忘**。以前 180 秒一到就删，可消息还挂在列表里，
+  // 下一轮 autoBubble() 就把它当成新消息再弹一遍。
+  function forgetOldKeys(live) {
+    var kept = 0
+    for (var k in playedKeys) {
+      if (!Object.prototype.hasOwnProperty.call(playedKeys, k)) continue
+      if (!live || !live[k]) {
+        delete playedKeys[k]
+        continue
       }
+      kept += 1
     }
-    // feed 为空的情况（老版本快照、或 gate 暂时给 null）：退回用 notices / approvals
-    // 判断「有没有新东西」，否则手机上、升级过程中永远等不到一次气泡。
-    if (!top) {
-      var nApprovals = data && Array.isArray(data.approvals) ? data.approvals.length : 0
-      var nNotices = data && Array.isArray(data.notices) ? data.notices.length : 0
-      if (nApprovals || nNotices) {
-        var fb = bubbleCard()
-        top = { seq: '', text: JSON.stringify(fb), level: nApprovals ? 0 : 2, pending: false }
+    // 兜底：真到了几百条（正常最多 40 条 human + 若干 tech），清掉最老的一半
+    if (kept > 400) {
+      var all = []
+      for (var k2 in playedKeys) {
+        if (Object.prototype.hasOwnProperty.call(playedKeys, k2)) all.push([k2, Number(playedKeys[k2] || 0)])
       }
+      all.sort(function (a, b) {
+        return a[1] - b[1]
+      })
+      for (var d = 0; d < all.length / 2; d++) delete playedKeys[all[d][0]]
     }
-    if (!top) return
+  }
+
+  // 一张一张放：气泡同时只能显示一条，排队显示，两条之间留间隔
+  function pumpBubble() {
+    clearTimeout(bubblePumpTimer)
+    if (bubbleBusy) return
+    if (!bubbleQueue.length) return
     try {
-      if (panel && panel.isOpen && panel.isOpen()) return
+      if (panel && panel.isOpen && panel.isOpen()) {
+        // 面板开着时把气泡压住（看完面板再挨个放）
+        bubblePumpTimer = setTimeout(pumpBubble, 1500)
+        return
+      }
     } catch (e) {
       /* 忽略 */
     }
-    var key = String(top.seq == null ? '' : top.seq) + '|' + String(top.text || '')
-    if (key === lastBubbleKey) return
-    lastBubbleKey = key
-    showBubble(top.pending ? 0 : 4500)
-    playLevel(top.pending ? 0 : top.level == null ? 2 : top.level)
+    var it = bubbleQueue.shift()
+    bubbleBusy = true
+    var sticky = Boolean(it.pending)
+    lastShownIt = it
+    showBubble(sticky ? 0 : 4500, cardFor(it))
+    playLevel(sticky ? 0 : it.level == null ? 2 : it.level)
+    bubbleBusyTimer = setTimeout(function () {
+      bubbleBusy = false
+      if (bubbleQueue.length) hideBubble()
+      pumpBubble()
+    }, sticky ? 5200 : BUBBLE_GAP + 2600)
+  }
+
+  function autoBubble() {
+    var now = Date.now()
+    var cands = bubbleCandidates()
+    // 先算出「现在还挂在列表里」的 key，只有不在里面的才允许被忘掉
+    var live = {}
+    for (var n = 0; n < cands.length; n++) live[cands[n].key] = true
+    forgetOldKeys(live)
+    if (!bubbleSeeded) {
+      // 第一次拿到快照：历史消息不回放（否则一开页就被几十条淹掉），
+      // 只把「等你决定」的那些摆出来。其余全记成已播。
+      bubbleSeeded = true
+      for (var i = 0; i < cands.length; i++) {
+        playedKeys[cands[i].key] = now
+        if (cands[i].pending) bubbleQueue.push(cands[i])
+      }
+      if (bubbleQueue.length) pumpBubble()
+      return
+    }
+    var fresh = []
+    for (var j = 0; j < cands.length; j++) {
+      var c = cands[j]
+      // 播过就跳过 —— 只要这条消息还在列表里，就绝不会再弹第二次。
+      // （以前这里写的是「45 秒内不重复」，可列表里的旧消息过了 45 秒
+      // 又会被当成新的，于是隔一阵就重弹一遍「已经弹过的」气泡。）
+      if (Number(playedKeys[c.key] || 0)) continue
+      playedKeys[c.key] = now
+      fresh.push(c)
+    }
+    if (!fresh.length) return
+    // 已经排着的不重复入队
+    var inQueue = {}
+    for (var q = 0; q < bubbleQueue.length; q++) inQueue[bubbleQueue[q].key] = true
+    for (var m = 0; m < fresh.length; m++) {
+      if (inQueue[fresh[m].key]) continue
+      bubbleQueue.push(fresh[m])
+    }
+    // 队列太长就不排了：只保留最后 3 条，避免一次刷屏几十张卡
+    if (bubbleQueue.length > 3) bubbleQueue = bubbleQueue.slice(-3)
+    pumpBubble()
   }
 
   function hideBubble() {
@@ -707,27 +954,8 @@
   }
 
   function paint() {
-    // 提示音：有新消息（时间比上次新）就响；同一时刻只响一次
-    try {
-      var feed = feedItems()
-      // 取「最新的一条」而不是 feed[0]：pending 会排在最前面，但它不一定最新
-      var newest = null
-      for (var k = 0; k < feed.length; k++) {
-        var t = Number(feed[k] && feed[k].at) || 0
-        if (!newest || t > (Number(newest.at) || 0)) newest = feed[k]
-      }
-      var newestAt = newest ? Number(newest.at) || 0 : 0
-      var pendingNow = unreadCount()
-      if (newestAt && newestAt > lastFeedAt) {
-        if (lastFeedAt) playLevel(Number(newest.level) || 2)
-      } else if (pendingNow > lastPending && lastPending >= 0) {
-        playLevel(0)
-      }
-      lastFeedAt = newestAt || lastFeedAt
-      lastPending = pendingNow
-    } catch (e) {
-      /* 响不了不影响功能 */
-    }
+    // 提示音改由气泡队列统一负责（pumpBubble 里播）：一条消息 = 一次气泡 + 一次音，
+    // 这样才不会「paint 响一遍、队列又响一遍」重复。这里不再播。
     if (dot) {
       var n = unreadCount()
       if (n > 0) {
@@ -738,8 +966,9 @@
       }
     }
     // 以前这里是每秒 textContent = summary()，纯文本覆写会让排版跳一下（隐约闪烁）。
-    // 现在交给 showBubble 统一渲染，内容指纹没变就完全不动 DOM。
-    if (bubble && bubble.style.opacity === '1') showBubble()
+    // v1.8.22 起气泡内容由队列决定（每条消息各自一张卡），这里只校正位置，
+    // 绝不能用 bubbleCard() 重画 —— 否则排队中的消息会被兜底文案顶掉。
+    if (bubble && bubble.style.opacity === '1') placeBubble()
   }
 
   function boot() {
@@ -947,7 +1176,11 @@
       playHover('in')
       el.classList.add('dmp-w-hover')
       clearTimeout(hoverTimer)
-      hoverTimer = setTimeout(showBubble, 300)
+      hoverTimer = setTimeout(function () {
+        // 有「最后一条消息」就重画它，否则才用兜底文案（v1.8.22）
+        if (lastShownIt) showBubble(0, cardFor(lastShownIt))
+        else showBubble()
+      }, 300)
     })
     el.addEventListener('pointerleave', function () {
       playHover('out')
@@ -1022,8 +1255,9 @@
       '#dmp-panel .dmp-title{flex:1;font-size:15.5px;font-weight:800;letter-spacing:.2px}',
       '#dmp-panel .dmp-x{border:0;background:#eef5f9;color:#4a5f70;width:28px;height:28px;border-radius:999px;cursor:pointer;font-size:15px;line-height:1}',
       '#dmp-panel .dmp-x:hover{background:#e0eef5}',
-      '#dmp-panel .dmp-tabs{display:flex;gap:6px;padding:10px 16px 0;background:#fff}',
-      '#dmp-panel .dmp-tab{border:0;background:transparent;color:#5c7284;font:600 13.5px/1 inherit;padding:9px 12px;border-radius:10px;cursor:pointer}',
+      // v1.8.25：三个页签平分整行（flex:1），不再按文字长短各占一块、右边留空
+      '#dmp-panel .dmp-tabs{display:flex;gap:0;padding:10px 16px 0;background:#fff}',
+      '#dmp-panel .dmp-tab{flex:1 1 0;min-width:0;border:0;background:transparent;color:#5c7284;font:600 13.5px/1 inherit;padding:9px 4px;border-radius:10px;cursor:pointer;text-align:center}',
       '#dmp-panel .dmp-tab.on{background:#e4f6fa;color:#0a5f75}',
       '#dmp-panel .dmp-warn{margin:10px 0 2px;padding:9px 11px;border-radius:10px;background:#fff8e8;border:1px solid #f3e0b0;color:#b45309;font:700 12.5px/1.5 system-ui}',
       '#dmp-panel .dmp-info{width:22px;height:22px;margin:9px 0 0 auto;padding:0;border-radius:50%;border:1px solid #cfe3ee;background:#f6fbfd;color:#3a7f95;font:800 12px/20px system-ui;cursor:pointer}',
@@ -1126,17 +1360,36 @@
       '#dsh-my-phone-widget:active .dmp-w-img{transform:scale(.9)}',
       '#dsh-my-phone-widget{overflow:visible!important}',
       '#dsh-my-phone-widget .dmp-w-img{backface-visibility:hidden}',
-      '#dmp-panel .feed{display:flex;flex-direction:column;gap:6px}',
-      '#dmp-panel .feed .it{position:relative;padding:8px 10px 8px 12px;border-radius:10px;background:#fbfdfe;border:1px solid var(--line2);transition:background .14s ease}',
-      '#dmp-panel .feed .it:hover{background:#f6fbfd}',
-      '#dmp-panel .feed .it::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:#cfe3ee}',
-      '#dmp-panel .feed .it.p1::before{background:#e06c00}',
+      // 消息卡（信笺格式）：左上角级别徽标（NEW 才显示）、中间文案、右下角时间。
+      // 三级都上色；容器最多摊开四五张卡，再多就出滚动条。
+      '#dmp-panel .feed{display:flex;flex-direction:column;gap:8px;max-height:322px;overflow-y:auto;overscroll-behavior:contain;padding:2px 4px 2px 2px;margin:2px 0 0}',
+      '#dmp-panel .feed .it{position:relative;padding:9px 12px 8px 15px;border-radius:12px;background:#fbfdfe;border:1px solid #dceaf2;transition:background .14s ease}',
+      // v1.8.22：把旧的左侧 3px 色条加回来。旧版写的是 left:0;top:8px;bottom:8px，卡片有 12px 圆角时
+      // 色条会从圆角外面露出来 —— 看着像「错位」。现在让色条内缩进圆角里、上下各留 9px，两端都圆。
+      '#dmp-panel .feed .it::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:#cfe3ee}',
       '#dmp-panel .feed .it.p0::before{background:#c88a00}',
-      '#dmp-panel .feed .it.p0{background:#fffdf6;border-color:#f2e6c4}',
-      '#dmp-panel .feed .it.p1{background:#fff9f3;border-color:#f6ddc6}',
-      '#dmp-panel .feed .it .tx{font:600 12.5px/1.5 system-ui;color:var(--ink)}',
-      '#dmp-panel .feed .it .tm{font:400 11px/1.5 system-ui;color:var(--ink3);font-variant-numeric:tabular-nums}',
-      '#dmp-panel .feed .it .mini{margin-top:6px}',
+      '#dmp-panel .feed .it.p1::before{background:#e06c00}',
+      '#dmp-panel .feed .it.p2::before{background:#1a6fe0}',
+      '#dmp-panel .feed .it .top{display:flex;align-items:center;gap:6px;min-height:16px;line-height:1}',
+      // v1.8.26：左上角的事件标签就是一列带色的小标题，不要胶囊背景（用户要求）
+      '#dmp-panel .feed .it .tag{display:inline-block;height:auto;padding:0;border-radius:0;background:none;font:800 11px/1.2 system-ui;letter-spacing:.02em;color:#1a6fe0}',
+      '#dmp-panel .feed .it .tag.t0{color:#a86f00}',
+      '#dmp-panel .feed .it .tag.t1{color:#c85a00}',
+      '#dmp-panel .feed .it .tag.t2{color:#1a6fe0}',
+      '#dmp-panel .feed .it .new{display:inline-flex;align-items:center;height:15px;padding:0 6px;border-radius:999px;font:800 9px/1 system-ui;letter-spacing:.1em;color:#fff;background:#1a6fe0}',
+      '#dmp-panel .feed .it .tx{margin:5px 0 0;font:600 12.5px/1.5 system-ui;color:var(--ink);word-break:break-word}',
+      '#dmp-panel .feed .it .tm{margin:4px 0 0;text-align:right;font:400 10.5px/1.4 ui-monospace,Menlo,monospace;color:var(--ink3);font-variant-numeric:tabular-nums}',
+      '#dmp-panel .feed .it.p0{background:#fffcf2;border-color:#f0e0b8}',
+      '#dmp-panel .feed .it.p0 .new{background:#c88a00}',
+      '#dmp-panel .feed .it.p1{background:#fff8f2;border-color:#f6d8c0}',
+      '#dmp-panel .feed .it.p1 .new{background:#e06c00}',
+      '#dmp-panel .feed .it.p2{background:#f8fbfe;border-color:#daeaf6}',
+      '#dmp-panel .feed .it.p2 .new{background:#1a6fe0}',
+      // 技术动态：只记录、不弹气泡，做成一行一条的浅色小字
+      '#dmp-panel .dmp-tech{display:flex;flex-direction:column;gap:5px;margin:2px 0 0}',
+      '#dmp-panel .dmp-tech .titem{display:flex;align-items:baseline;gap:8px;padding:6px 10px;border-radius:9px;background:#f7fafc;border:1px solid #e6eff5}',
+      '#dmp-panel .dmp-tech .ttext{flex:1;min-width:0;font:500 11.5px/1.45 system-ui;color:#4a6478;word-break:break-word}',
+      '#dmp-panel .dmp-tech .ttime{flex:0 0 auto;font:400 10px/1.4 ui-monospace,Menlo,monospace;color:#8fa5b5}',
       '#dmp-panel .dmp-infotip{position:fixed;z-index:2147483647;display:none;width:214px;padding:10px 12px;border-radius:12px;background:#fff;color:var(--ink);border:1px solid #dfeaf1;font:400 11.5px/1.6 system-ui;box-shadow:0 14px 30px rgba(6,24,36,.16);pointer-events:none}',
       '#dmp-panel .dmp-infotip::before{content:"";position:absolute;left:-4px;top:12px;width:7px;height:7px;background:#fff;border-left:1px solid #dfeaf1;border-bottom:1px solid #dfeaf1;transform:rotate(45deg)}',
       '#dmp-panel .pick{width:100%;text-align:left;border:1px solid #cfe4ec;border-radius:8px;padding:7px 9px;background:#fff;color:#0d2130;font:12.5px/1.4 system-ui;cursor:pointer}',
@@ -1159,12 +1412,6 @@
       '#dmp-panel .seg button{display:inline-flex;align-items:center;justify-content:center;height:30px;min-width:44px;border:1px solid #d8e7ee;background:#fff;color:#43606f;font:700 12px/1 system-ui;padding:0 11px;border-radius:9px;cursor:pointer;transition:background .14s ease,border-color .14s ease,color .14s ease,transform .1s ease}',
       '#dmp-panel .seg button:active{transform:scale(.97)}',
       '#dmp-panel .seg button.on{background:#e4f6fa;border-color:#a8d9e5;color:#0a5f75}',
-      '#dmp-panel .feed{border-left:3px solid #cfdde6;padding-left:10px;margin:4px 0 0}',
-      '#dmp-panel .feed .it{padding:6px 0}',
-      '#dmp-panel .feed .it.p0{border-left:3px solid #c88a00;margin-left:-13px;padding-left:10px}',
-      '#dmp-panel .feed .it.p1{border-left:3px solid #e06c00;margin-left:-13px;padding-left:10px}',
-      '#dmp-panel .feed .tx{font-size:12.5px;color:#12303f;word-break:break-word}',
-      '#dmp-panel .feed .tm{font:11px/1.4 ui-monospace,Menlo,monospace;color:#7b8fa1;margin-top:2px}',
       '#dmp-panel .foot{padding:10px 16px;background:#fff;border-top:1px solid #e3eef4;font-size:11px;color:#7b8fa1;text-align:center}',
     ].join('\n')
     document.documentElement.appendChild(st)
@@ -1305,7 +1552,12 @@
         class: 'dmp-tab' + (tab === key ? ' on' : ''),
         text: label,
         onclick: function () {
+          var wasReadTab = tab === 'feed' || tab === 'advanced'
+          var isReadTab = key === 'feed' || key === 'advanced'
           tab = key
+          // v1.8.22：改在**离开**消息页时落「已读」。这样刚点进来还能看见哪些卡是新的，
+          // 走开再回来 NEW 才消失（红点一并清掉）。
+          if (wasReadTab && !isReadTab) markFeedSeen()
           render()
         },
       })
@@ -1313,6 +1565,9 @@
 
     function renderTabs() {
       tabsBar.textContent = ''
+      // v1.8.25：三个页签把一整行占满（各占 1/3），「连接」放正中间 ——
+      // 它是最常点的那个，居中比靠左更好按；打开面板默认就落在「连接」。
+      tabsBar.appendChild(tabBtn('feed', '消息/日志'))
       tabsBar.appendChild(tabBtn('connect', '连接'))
       tabsBar.appendChild(tabBtn('advanced', '高级'))
     }
@@ -1426,9 +1681,22 @@
       return out
     }
 
+    // 一行开关，行尾可以带一个「！」说明图标（v1.8.25：入口那块的两句说明
+    // 从大标题上挪到这里，贴着手边更好看到）
     function switchRow(label, sub, on, onToggle) {
+      var head = h('div', { class: 'name', text: label })
       return h('div', { class: 'row' }, [
-        h('div', { class: 'grow' }, [h('div', { class: 'name', text: label }), h('div', { class: 'meta', text: sub })]),
+        h('div', { class: 'grow' }, [head, sub ? h('div', { class: 'meta', text: sub }) : null]),
+        h('button', { class: 'pill ' + (on ? 'on' : 'off'), text: on ? '已开启' : '已关闭', onclick: onToggle }),
+      ])
+    }
+
+    // 同 switchRow，但标题后面跟一个「！」说明
+    function switchRowI(label, sub, tip, on, onToggle) {
+      var head = h('div', { class: 'name', style: 'display:flex;align-items:center;gap:5px', text: label })
+      if (tip) head.appendChild(qIcon(tip))
+      return h('div', { class: 'row' }, [
+        h('div', { class: 'grow' }, [head, sub ? h('div', { class: 'meta', text: sub }) : null]),
         h('button', { class: 'pill ' + (on ? 'on' : 'off'), text: on ? '已开启' : '已关闭', onclick: onToggle }),
       ])
     }
@@ -1454,10 +1722,8 @@
       ])
     }
 
-    // 带「！」的区块标题：鼠标放上去在图标旁边弹一条小气泡说明
-    function h4i(title, tip) {
-      var row = h('h4', { style: 'display:flex;align-items:center;gap:6px' })
-      row.appendChild(document.createTextNode(title))
+    // 「！」小圆标：鼠标放上去在旁边弹一条说明（同一个东西 h4i() 和开关行都用）
+    function qIcon(tip) {
       var icon = h('span', { class: 'dmp-q', title: '' })
       icon.innerHTML =
         '<svg viewBox="0 0 12 12" aria-hidden="true">' +
@@ -1470,8 +1736,20 @@
       icon.addEventListener('pointerleave', function () {
         hideInfo()
       })
-      row.appendChild(icon)
+      return icon
+    }
+
+    // 带「！」的区块标题：鼠标放上去在图标旁边弹一条小气泡说明
+    function h4i(title, tip) {
+      var row = h('h4', { style: 'display:flex;align-items:center;gap:6px' })
+      row.appendChild(document.createTextNode(title))
+      if (tip) row.appendChild(qIcon(tip))
       return row
+    }
+
+    // 没有说明的区块标题（v1.8.25：入口这条整块说明挪到两个开关行上去了）
+    function h4p(title) {
+      return h('h4', { style: 'display:flex;align-items:center;gap:6px', text: title })
     }
 
     var infoEl = null
@@ -1625,6 +1903,10 @@
     function feedRows() {
       // data.feed 是对象（pending/human/tech），这里用摊平后的列表 —— 见 feedItems()
       var feed = feedItems()
+      // 时间倒序（最新的在最上面）；没有 at 的老数据排最后
+      feed = feed.slice().sort(function (a, b) {
+        return (Number(b && b.at) || 0) - (Number(a && a.at) || 0)
+      })
       var out = []
       if (!feed.length) {
         out.push(
@@ -1636,45 +1918,55 @@
           }),
         )
       }
+      // 超过四五条左右就滚动（.feed 的 max-height 卡在 5 张卡的高度）
       var wrap = h('div', { class: 'feed' })
-      feed.slice(0, 12).forEach(function (it) {
-        var lv = Number(it.level) || 2
-        var line = h('div', { class: 'it ' + (lv === 0 ? 'p0' : lv === 1 ? 'p1' : '') }, [
-          h('div', { class: 'tx', text: it.text || '' }),
-          h('div', { class: 'tm', text: hhmm(it.at) + (it.pending ? ' · 等你处理' : '') }),
-        ])
-        if (it.pending) {
-          line.appendChild(
-            h('button', {
-              class: 'btn',
-              text: '知道了',
-              onclick: function () {
-                if (it.id && String(it.id).charAt(0) === 'a') post('ack', { ack: it.seq })
-                else if (it.id && String(it.id).charAt(0) === 'j') post('ack', { notice: it.seq })
-                else post('ack', { ack: it.seq })
-              },
+      feed.forEach(function (it) {
+        var lv = Number(it.level)
+        if (lv !== 0 && lv !== 1) lv = 2
+        var kids = []
+        // v1.8.25：事件标签从右下角搬到左上角，当信笺的 title（用户说「这个是每条
+        // 消息都有的，都有的就放左上角当 title」）；NEW 徽标紧跟在 title 后面。
+        var top = []
+        top.push(h('span', { class: 'tag t' + lv, text: kindLabel(it.kind) }))
+        if (Number(it.at) > feedSeen) top.push(h('span', { class: 'new', text: 'NEW' }))
+        kids.push(h('div', { class: 'top' }, top))
+        kids.push(h('div', { class: 'tx', text: it.text || '' }))
+        // 右下角只留时间（类型已经在左上角了，不重复说两遍）
+        kids.push(h('div', { class: 'tm', text: hhmm(it.at) }))
+        wrap.appendChild(h('div', { class: 'it p' + lv }, kids))
+      })
+      if (feed.length) out.push(wrap)
+      return out
+    }
+
+    // 技术动态：「会话名 正在用 工具」、401 扫描、上游 503 这类。
+    // v1.8.24：「正在用工具」这种高频事件不再弹气泡（只在这儿列着），
+    // 其余技术动态仍然弹；都不进红点（红点只算要人判断的）。
+    function techRows() {
+      var techList = data && data.feed && Array.isArray(data.feed.tech) ? data.feed.tech : []
+      if (!techList.length) return []
+      var out = [
+        h('div', {
+          class: 'dmp-hint',
+          style: 'margin:10px 0 4px',
+          text: '技术动态（「正在用工具」这类高频的不弹气泡、不响音，这儿都记着；其余会弹。都不进红点 —— 红点只算要人判断的）',
+        }),
+      ]
+      var wrap = h('div', { class: 'dmp-tech' })
+      techList.slice(0, 12).forEach(function (t) {
+        wrap.appendChild(
+          h('div', { class: 'titem' }, [
+            h('span', { class: 'ttext', text: t.text || '' }),
+            // 时间 · 事件类型 ·（合并了几次）。类型名走 kindLabel()，跟气泡卡片里的说法一致，
+            // 不会再出现「同一条动态，气泡写『正在用工具』、列表里写 tool」这种对不上的情况。
+            h('span', {
+              class: 'ttime',
+              text: hhmm(t.at) + ' · ' + kindLabel(t.kind) + (Number(t.count) > 1 ? ' · ' + t.count + ' 次' : ''),
             }),
-          )
-        }
-        wrap.appendChild(line)
+          ]),
+        )
       })
       out.push(wrap)
-      // 「会话名 正在用 工具」这类技术动态：用户要求加回来显示，但**不弹气泡、不响音、不进红点**。
-      // 所以它们只留在 feed.tech 里（不进 feedItems()），这里单独列一小块。
-      var techList = data && data.feed && Array.isArray(data.feed.tech) ? data.feed.tech : []
-      if (techList.length) {
-        out.push(h('div', { class: 'dmp-hint', style: 'margin:8px 0 2px', text: '技术动态（只记录，不弹气泡）' }))
-        var techWrap = h('div', { class: 'feed' })
-        techList.slice(0, 4).forEach(function (t) {
-          techWrap.appendChild(
-            h('div', { class: 'it' }, [
-              h('div', { class: 'tx', text: t.text || '' }),
-              h('div', { class: 'tm', text: hhmm(t.at) + (Number(t.count) > 1 ? ' · ' + t.count + ' 次' : '') }),
-            ]),
-          )
-        })
-        out.push(techWrap)
-      }
       return out
     }
 
@@ -1703,7 +1995,7 @@
               var list = data && Array.isArray(data.events) ? data.events : []
               var txt = list
                 .map(function (e) {
-                  return hhmm(e.at) + ' ' + (e.kind || '') + ' ' + (e.text || '')
+                  return hhmm(e.at) + ' ' + kindLabel(e.kind) + ' ' + (e.text || '')
                 })
                 .join('\n')
               copyText(txt || '（还没有日志）')
@@ -1724,7 +2016,7 @@
       if (logOpen) {
         var box = h('div', { style: 'max-height:170px;overflow:auto;border:1px solid #e3eef4;border-radius:10px;padding:8px;background:#fff' })
         raw.slice(-40).reverse().forEach(function (e) {
-          box.appendChild(h('div', { class: 'feed' }, [h('div', { class: 'tx', text: e.text || '' }), h('div', { class: 'tm', text: hhmm(e.at) + ' · ' + (e.kind || '') })]))
+          box.appendChild(h('div', { class: 'feed' }, [h('div', { class: 'tx', text: e.text || '' }), h('div', { class: 'tm', text: hhmm(e.at) + ' · ' + kindLabel(e.kind) })]))
         })
         if (!raw.length) box.appendChild(h('div', { class: 'dmp-hint', text: '暂无日志。' }))
         out.push(box)
@@ -1756,8 +2048,11 @@
         evs.forEach(function (e) {
           rOut.push(
             h('div', { class: 'feed' }, [
-              h('div', { class: 'tx', text: e.text || '' }),
-              h('div', { class: 'tm', text: hhmm(e.at) + ' · ' + (e.kind || '') }),
+              h('div', { class: 'it p2' }, [
+                h('div', { class: 'top' }, [h('span', { class: 'tag t2', text: kindLabel(e.kind) })]),
+                h('div', { class: 'tx', text: e.text || '' }),
+                h('div', { class: 'tm', text: hhmm(e.at) }),
+              ]),
             ]),
           )
         })
@@ -1773,9 +2068,16 @@
           text: '⚠ 不要把链接随便发给外人 —— 3 分钟内谁拿到都能点「信任」进来',
         }),
       )
-      out.push(h4i('入口', '局域网只在同一个 Wi-Fi 里能用；外网走 Cloudflare 中继，在外面也能连回来。两个都关 = 手机进不来。'))
-      function addrLine(urlValue) {
-        if (!urlValue) return h('div', { class: 'dmp-hint', style: 'padding:0 0 10px', text: '地址还没起来，稍等一秒' })
+      // v1.8.25：「入口」这块的说明从大标题上的「！」挪到两个开关行后面，贴合各自管的东西
+      out.push(h4p('入口'))
+      function addrLine(urlValue, emptyText) {
+        if (!urlValue) {
+          return h('div', {
+            class: 'dmp-hint',
+            style: 'padding:0 0 10px',
+            text: emptyText || '地址还没起来，稍等一秒',
+          })
+        }
         return h('div', { class: 'dmp-link', style: 'margin:0 0 10px' }, [
           h('code', { text: urlValue }),
           h('button', {
@@ -1788,16 +2090,30 @@
         ])
       }
       out.push(
-        switchRow('局域网访问', lan ? '同一 Wi-Fi 下可用，不经第三方' : '关着（默认只用外网，一个码到处都能用）', lan, function () {
-          post('toggle', { key: 'lan' })
-        }),
+        switchRowI(
+          '局域网访问',
+          lan ? '同一 Wi-Fi 下可用，不经第三方' : '关着（只走外网，一个码到处都能用）',
+          '局域网只在同一个 Wi-Fi 里能用，不经第三方服务器。',
+          lan,
+          function () {
+            post('toggle', { key: 'lan' })
+          },
+        ),
       )
       out.push(addrLine(lan ? String((data && data.lanUrl) || '') : ''))
       out.push(
-        switchRow('外网访问', tun ? '经 Cloudflare 中继，开着就能从外面连回来' : '关着（出门在外就连不上）', tun, function () {
-          post('toggle', { key: 'tunnel' })
-        }),
+        switchRowI(
+          '外网访问',
+          tun ? '经 Cloudflare 中继，开着就能从外面连回来' : '关着（出门在外就连不上）',
+          '外网走 Cloudflare 中继，在外面也能连回来。两个都关 = 手机进不来。',
+          tun,
+          function () {
+            post('toggle', { key: 'tunnel' })
+          },
+        ),
       )
+      // v1.8.25：外网访问下面补一行「连接（地址）+ 复制」
+      out.push(addrLine(tun ? String((data && data.tunnelUrl) || '') : '', '外网关着，打开上面那个开关才会生成地址'))
       out.push(
         segRow(
           '外网自动关闭',
@@ -1807,10 +2123,6 @@
           [0, 30, 60, 90, 120],
         ),
       )
-      out.push(h4i('消息', '新设备连入、会话等你授权、失败 / 重试、上下文到 80/90/95% 都会在这里留一条，点「知道了」清掉。'))
-      feedRows().forEach(function (n) {
-        out.push(n)
-      })
       out.push(h4i('已配对设备', '每台设备能单独信任 / 断开 / 删除，也能加备注。上限 8 台，满了要先删一台。'))
       deviceRows().forEach(function (n) {
         out.push(n)
@@ -1820,6 +2132,41 @@
         out.push(n)
       })
       // 免打扰 / 一键静音整块已去掉（用户 2026-10-30：静音功能直接去掉）
+      // v1.8.22：消息 / 排查日志 / 技术动态三块整体搬到第三个 tab「消息/日志」，
+      // 高级页只留入口、设备、音效这些设置项。
+      // v1.8.25：末尾那条「消息与日志」的空标题也去掉（用户：高级里消息与日志去掉）——
+      // 页签上已经写着「消息/日志」了，设置页留一行指路反而占地方。
+      return out
+    }
+
+    // 第三个 tab：消息 + 技术动态 + 排查日志（v1.8.22）
+    function feedPane() {
+      if (remote) {
+        var rOut = []
+        var evs = Array.isArray(remote.events) ? remote.events.slice(-20).reverse() : []
+        rOut.push(h4i('消息', '这台手机是只读视图，消息在电脑上的悬浮球里看。'))
+        if (!evs.length) rOut.push(h('div', { class: 'dmp-hint', text: '暂时没有新消息。' }))
+        var rWrap = h('div', { class: 'feed' })
+        evs.forEach(function (e) {
+          rWrap.appendChild(
+            h('div', { class: 'it p2' }, [
+              h('div', { class: 'tx', text: e.text || '' }),
+              h('div', { class: 'tm', text: hhmm(e.at) + ' · ' + (e.kind || '') }),
+            ]),
+          )
+        })
+        if (evs.length) rOut.push(rWrap)
+        return rOut
+      }
+      var out = []
+      out.push(h4i('消息', '按时间倒序；P0 金（要你决定）/ P1 橙（值得留意）/ P2 蓝（普通）。离开这一页时记已读，NEW 与红点一起消失。'))
+      feedRows().forEach(function (n) {
+        out.push(n)
+      })
+      techRows().forEach(function (n) {
+        out.push(n)
+      })
+      out.push(h4i('排查日志', '连接、证书、隧道每一步都记着；出问题先复制这段。'))
       logRows().forEach(function (n) {
         out.push(n)
       })
@@ -1837,7 +2184,7 @@
           var sig = fingerprint()
           if (sig && sig === lastPaintSig) return
           lastPaintSig = sig
-          var nodes = tab === 'connect' ? connectPane() : advancedPane()
+          var nodes = tab === 'connect' ? connectPane() : tab === 'feed' ? feedPane() : advancedPane()
           // 新内容准备完毕才动旧 DOM：算的时候抛异常也不会把页面清成空白
           renderTabs()
           body.textContent = ''
@@ -1868,18 +2215,47 @@
           d.tunnelAutoOffMinutes,
           d.mutedUntil,
           d.unread,
+          // v1.8.26：lastSeen 精确到分钟再进指纹。
+          // 手机自己每访问一次（含全部静态资源）服务端就刷新 lastSeen，精确值进指纹 = 每几秒指纹变一次
+          // → render() 整块重建面板 DOM，看起来就是「一直在重载」。界面上显示的是 hhmm()，分钟粒度足够。
           (d.deviceList || []).map(function (x) {
-            return [x.id, x.note, x.trusted, x.lastSeen].join('|')
+            return [x.id, x.note, x.trusted, Math.floor(Number(x.lastSeen || 0) / 60000)].join('|')
           }),
           (d.feed || {}).pendingCount,
+          // NEW 徽标跟着「上次读消息页的时间」走，这个变了必须重画
+          feedSeen,
+          (d.feed || {}).unread,
+          // 「消息/日志」页的内容指纹：最新一条消息的时间 + 技术动态条数
+          ((d.feed || {}).human || []).length,
+          ((d.feed || {}).human || [])[0] && ((d.feed || {}).human || [])[0].at,
+          ((d.feed || {}).tech || []).length,
+          ((d.feed || {}).tech || [])[0] && ((d.feed || {}).tech || [])[0].at,
+          (d.feed || {}).techCount,
+          (d.feed || {}).techRaw && (d.feed.techRaw || [])[0] && d.feed.techRaw[0].at,
+          // v1.8.26：只比长度不够 —— events 到上限 40 条后长度不再变，
+          // 「排查日志」里最新那一条就永远刷不出来。带上最新一条的序号与时间。
           (d.events || []).length,
+          ((d.events || [])[(d.events || []).length - 1] || {}).seq,
+          ((d.events || [])[(d.events || []).length - 1] || {}).at,
           tab,
           editId,
           logOpen,
-          infoOpen,
+          // v1.8.26 修：这一行原来写的是 `infoOpen`，而这个变量在整个文件里从未声明过 →
+          // fingerprint() 每次都抛 ReferenceError，被下面的 catch 吞掉后返回 ''，
+          // 空串让 `sig === lastPaintSig` 永远不成立 → 每次轮询都整块重建面板 DOM。
+          // 这就是「每过几秒一直在重载」的真正原因。
           sound(),
         ])
       } catch (e) {
+        // 指纹算不出来时返回 ''（= 每次都重画，画面不会错，但会白费力气）。
+        // 一定要把异常打出来：v1.8.26 前这里静默吞掉了一个 ReferenceError，
+        // 结果就是面板每几秒整块重建，查了很久才找到。
+        try {
+          if (!window.__dmpFpWarned) {
+            window.__dmpFpWarned = true
+            console.warn('[dsh-my-phone] fingerprint() 抛异常，已退回「每帧重画」：', e)
+          }
+        } catch (_) {}
         return ''
       }
     }
