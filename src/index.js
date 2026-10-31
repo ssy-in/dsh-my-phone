@@ -402,21 +402,31 @@ function applyBody(ctx) {
         try {
           if (!event) return
           const sid = String((session && session.id) || '')
+          // v1.8.29（真 bug 修复）：宿主的事件对象是 { seq, type, data } ——
+          // **所有业务字段都在 event.data 下面，不在顶层**。这里原来通读 event.xxx，
+          // 于是 id / toolName / outcome / reason / active 全是 undefined：
+          //   · approval/asked 的行 id 永远空串 → approval/decided 匹配不上 → 「等授权」永不消失
+          //   · toolName 永远空 → 没有「正在用 Read」，授权也没有工具名
+          //   · turn/end 的 reason 永远空 → 失败被当成正常完成
+          //   · plan/mode 的 active 永远 undefined → 计划模式永远判成 agent
+          // 统一走 ev（= event.data），取不到再退回顶层（单测里直接喂顶层字段）。
+          const ev = (event && event.data) || event || {}
+          const evf = (k) => (ev[k] !== undefined ? ev[k] : event[k])
           // v1.2.1：会话标题本身就是一条日志事件（session/title { title, source }），
           // 拿它的事件流比轮询服务更即时，改完名下一次提醒就是新名字
           let title = ''
           if (event.type === 'session/title') {
-            const ti = String(((event.data && event.data.title) || event.title || '')).trim()
+            const ti = String(evf('title') || '').trim()
             if (ti) title = ti.slice(0, 120)
           }
           if (!title) title = sessionTitleOf(session)
           if (sid) liveSessionTitles.set(sid, title)
-          const callId = String((event && (event.callId || event.id || event.callID)) || '')
+          const callId = String(evf('callId') || evf('id') || '')
           // 模式记录：会话对象上带着就用它；改动由 plan/mode 事件更新
           const fromSessionMode = modeFromSession(session)
           if (sid && fromSessionMode) modeOf.set(sid, fromSessionMode)
           if (sid && event.type === 'plan/mode') {
-            modeOf.set(sid, event.active ? 'plan' : 'agent')
+            modeOf.set(sid, evf('active') ? 'plan' : 'agent')
           }
           if (sid && lastSid && sid !== lastSid) {
             const before = modeOf.get(lastSid) || ''
@@ -433,9 +443,14 @@ function applyBody(ctx) {
           }
           if (event.type === 'turn/end') {
             runningTurns.delete(sid)
-            const bad = Boolean((event.reason && event.reason.kind && event.reason.kind !== 'completed') || event.error)
+            // v1.8.29：这一轮结束了，它之前报的「等授权」一定已经被答掉了（宿主答完才继续跑），
+            // 一次清干净，否则「等授权」会越堆越多、红点归不了零。
+            gate.clearApprovalsForSession?.(sid)
+            const reason = evf('reason')
+            const err = evf('error')
+            const bad = Boolean((reason && reason.kind && reason.kind !== 'completed') || err)
             if (bad) {
-              const why = String((event.reason && event.reason.kind) || event.error || '未知原因')
+              const why = String((reason && reason.kind) || err || '未知原因')
               // v1.2.3：会话失败也弹气泡（P1 橙），消息中心同样记一条 P1
               gate.noteAlert?.('warn', `【${title}】 这一轮失败了`, { ref: `turnfail:${sid}` })
               gate.noteEvent?.('turnfail', `【${title}】 这一轮失败：${why}`)
@@ -471,19 +486,19 @@ function applyBody(ctx) {
           // 会话在等授权：宿主的审批服务会把 asked / decided 写进会话日志，
           // 这里直接听就行 —— 比 approval/request 瀑布钩子可靠（那条线上什么都能接）
           if (event.type === 'approval/asked') {
-            const tool = String(event.toolName || '')
-            gate.noteApproval?.(session && session.id, title, tool, event.id)
+            const tool = String(evf('toolName') || '')
+            gate.noteApproval?.(session && session.id, title, tool, evf('id'))
             gate.noteEvent?.('approval', `会话在等授权：【${title || '(无标题会话)'}】${tool ? ' · ' + tool : ''}`)
             return
           }
           if (event.type === 'approval/decided') {
-            gate.decideApproval?.(event.id, event.outcome)
+            gate.decideApproval?.(evf('id'), evf('outcome'))
             return
           }
           // 「等你回答」：宿主没有 question/asked 这种事件，提问就是一次 ask_user_question 工具调用，
           // 结果回来（tool/result 同一个 callId）就等于回答完了 —— 按 callId 收掉气泡。
           if (event.type === 'tool/call') {
-            const tool = String(event.toolName || '')
+            const tool = String(evf('toolName') || '')
             // v1.8.19：把「会话名 正在用 工具」加回来（用户要求）。
             // v1.8.22：这类技术动态也会弹气泡 + 响一声（用户要求「所有消息都弹窗和音效」），
             // 但依旧不进红点 —— 红点只算要人判断的。同一会话 60 秒记一条，免得刷屏。

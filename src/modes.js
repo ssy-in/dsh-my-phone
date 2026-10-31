@@ -57,14 +57,18 @@ export function labelOf(spec, raw) {
 export function describeMode(event) {
   if (!event || !event.type) return null
   const spec = MODE_KNOBS[event.type]
+  // v1.8.29：宿主事件是 { seq, type, data }，业务字段在 event.data 里。
+  // 原来直接读 event.preset / event.provider —— 永远是 undefined，模式切换一次都没提醒过。
+  const d = event.data || event
+  const pick = (k) => (d[k] !== undefined ? d[k] : event[k])
   if (!spec) {
     if (event.type !== 'model/selection') return null
-    const provider = String(event.provider || '')
-    const model = String(event.model || '')
+    const provider = String(pick('provider') || '')
+    const model = String(pick('model') || '')
     if (!provider && !model) return null
     return { key: '模型', label: [provider, model].filter(Boolean).join(' / ') }
   }
-  const raw = event.preset ?? event.mode ?? event.policy ?? event.active
+  const raw = pick('preset') ?? pick('mode') ?? pick('policy') ?? pick('active')
   const shown = typeof raw === 'boolean' ? String(raw) : raw
   return { key: spec.key, label: labelOf(spec, shown) }
 }

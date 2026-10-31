@@ -6,10 +6,10 @@
 
 ```bash
 node test/widget-test.mjs      # 悬浮球 / 弹窗 / 气泡的结构与文案（25 项）
-node test/widget-dom-test.mjs  # 假 DOM 里真跑 widget.js：挂载、气泡定位、队列、去重、消息卡（左上事件标签）、页签、文案与事件对得上、高频事件不弹、指纹不发空（40 项）
+node test/widget-dom-test.mjs  # 假 DOM 里真跑 widget.js：挂载、气泡定位（不压球）、队列、去重、消息卡（左上事件标签）、页签、文案与事件对得上、高频事件不弹、指纹不发空、滚动位置不跳顶、手机端不白跑 404、手机端红点与已读、一键清空设备凭证、手机端高级页音效可操作、连接页两张二维码卡片可切换、按开关出侧、页签选中态、倒计时单独一行、高级页无链接行（76 项）
 node test/panel-test.js        # 面板 HTTP 接口 + 快照字段（29 项）
-node test/feed-test.mjs        # 消息中心三段流：非人记录 / 人做的事 / 待处理（29 项）
-node test/state-test.js        # state.json 读写、迁移、设备 upsert、静默设置（10 项）
+node test/feed-test.mjs        # 消息中心三段流：非人记录 / 人做的事 / 待处理（33 项）
+node test/state-test.js        # state.json 读写、迁移、设备 upsert、静默设置、一键清空设备（11 项）
 node test/approval-test.mjs    # 授权提醒：会话名、【】文案、合并、ack（19 项）
 node test/passkey-test.mjs     # 长期凭据（第二把钥匙）：签发/校验/作废（22 项）
 node test/entry-test.mjs       # 扫码地址规则：外网开→https，关→IP，未就绪→pending（8 项）

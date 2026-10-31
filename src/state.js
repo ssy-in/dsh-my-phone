@@ -407,6 +407,21 @@ export class MyPhoneState {
   }
 
   /**
+   * v1.8.31：一键清掉所有设备凭证。
+   * 设备一删，之前发的 token 就签不出人来了 —— currentDevice() 里
+   * `state.devices.find(...)` 找不到就返回 null，所以旧 cookie / 旧 passKey
+   * 一起失效，不需要再轮换 pluginSecret（换了反而把没删干净的东西也一起作废，
+   * 排查时看不出是谁还在敲门）。
+   */
+  removeAllDevices() {
+    const n = this.data.devices.length
+    if (!n) return 0
+    this.data.devices = []
+    this.save()
+    return n
+  }
+
+  /**
    * 手机上每一个被代理的请求（含全部静态资源）都会走这里。
    * 以前每次都全量同步写盘（mkdir + write + rename），开一屏就是几百次，
    * 事件循环被拖住、Windows 上还可能被杀毒软件抢锁。

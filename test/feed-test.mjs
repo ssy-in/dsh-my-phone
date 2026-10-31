@@ -98,5 +98,17 @@ const warn = f3.human.filter((x) => x.kind === 'turnfail' || x.kind === 'retry' 
 check('一轮失败/重试/模型不可用都进人工动态', warn.length === 3, `n=${warn.length}`)
 check('这三类都是 P1（橙）', warn.every((x) => x.level === 1), warn.map((x) => x.level).join(','))
 check('扫描这类技术噪音仍在技术日志', f3.tech.some((x) => x.kind === 'scan') && !f3.human.some((x) => x.kind === 'scan'))
+
+// 7. v1.8.30：技术动态不能被高频人工事件挤出列表。
+// 原来技术类与 turnok/longrun 共用同一个 40 条环形缓冲，实测 40 条里 19 条 turnok、
+// 10 条 longrun —— 技术动态只剩最早那两条，用户看到就截图问「这里漏数据了吧」。
+for (let i = 0; i < 30; i += 1) gate.noteEvent('turnok', `某会话 完成了一轮 #${i}`)
+gate.noteEvent('upstream', '连不上本机 DSH：ECONNREFUSED')
+const f4 = gate.feed()
+check('技术动态没被高频人工事件挤掉', f4.tech.length >= 2, JSON.stringify(f4.tech.map((t) => t.kind)))
+check('新进来的技术事件也在', f4.tech.some((t) => t.kind === 'upstream'), JSON.stringify(f4.tech.map((t) => t.kind)))
+check('技术动态里没有「会话在等授权」这类误会', !f4.tech.some((t) => t.kind === 'approval'), JSON.stringify(f4.tech.map((t) => t.kind)))
+check('授权仍在 pending 里（没被藏掉）', f4.pending.length > 0, `n=${f4.pending.length}`)
+
 console.log(`\n${pass}/${pass + fail} 通过`)
 if (fail) process.exit(1)

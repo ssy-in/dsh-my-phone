@@ -20,7 +20,8 @@ const check = (name, ok, extra = '') => {
 const src = fs.readFileSync(new URL('../src/widget.js', import.meta.url), 'utf8')
 check('widget.js 自带弹窗创建函数', src.includes('function createPanel()'))
 check('弹窗容器与样式都在 widget.js 里', src.includes("id: 'dmp-panel'") && src.includes('#dmp-panel .dmp-card'))
-check('球尺寸（121，比原来小 10%）', /var TILE = 121/.test(src))
+// v1.8.32：桌面 121，手机端再缩 40%（73）。断言两个常量都在，别写死只认 121。
+check('球尺寸（桌面 121 / 手机 73）', /var TILE = IS_MOBILE \? 73 : 121/.test(src))
 check('悬停气泡仍在纯 DOM 里', src.includes('dmp-w-bubble'))
 check('不再用 window.open 兜底（Electron 会拦）', !src.includes("window.open('/__myphone/'"))
 check(
@@ -28,7 +29,10 @@ check(
   src.includes('window.__dshMyPhoneOpened') && src.includes('if (window.__dshMyPhoneOpened) return'),
 )
 check('纯 DOM 球就位后让 React 球让位（dmp-widget-on）', src.includes("classList.add('dmp-widget-on')"))
-check('连接页两行文案与「生成二维码」按钮在 DOM 版里', src.includes('相机或者浏览器扫码连接') && src.includes('生成二维码'))
+check(
+  '连接页文案与「生成二维码」按钮在 DOM 版里',
+  src.includes('相机或浏览器扫码连接 DSH 桌面版') && src.includes('生成二维码') && !src.includes('扫码连接 DeepSeek Harness 桌面版'),
+)
 
 const audioSrc = fs.readFileSync(new URL('../src/audio.js', import.meta.url), 'utf8')
 check('音效引擎已抽成独立脚本', audioSrc.includes('window.__dshMyPhoneAudio') && audioSrc.includes('setVolume('))

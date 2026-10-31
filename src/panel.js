@@ -110,6 +110,18 @@ export function registerPanel(ctx, { state, gate, getAddresses, getQrBase = null
         qrSvg = ''
       }
     }
+    // v1.8.33：同一张票，再出一张「局域网」二维码 —— 「连接」页做成可切换的两张卡片。
+    // 在家扫局域网的、出门扫外网的，不用再手动复制地址。
+    const lanBase = addresses.find((a) => String(a).startsWith('http://')) || ''
+    const lanPairUrl = liveTicket && lanBase ? gate.pairingUrl(liveTicket.ticket, lanBase) : ''
+    let qrSvgLan = ''
+    if (lanPairUrl) {
+      try {
+        qrSvgLan = toSvg(lanPairUrl, { scale: 4, margin: 2, dark: '#0b1220', light: '#ffffff' }).svg
+      } catch {
+        qrSvgLan = ''
+      }
+    }
     return {
       lanEnabled: Boolean(s.lanEnabled),
       tunnelEnabled: Boolean(s.tunnelEnabled),
@@ -150,6 +162,10 @@ export function registerPanel(ctx, { state, gate, getAddresses, getQrBase = null
       publicPort: gate.publicPort || s.publicPort,
       autoOffEnabled: Number(s.autoOffMinutes || 0) > 0,
       qrSvg,
+      // v1.8.33：局域网那张码 + 是否可用（开关开着且拿得到 IP）
+      qrSvgLan,
+      lanPairUrl,
+      lanAvailable: Boolean(s.lanEnabled && lanBase),
       // ---- v0.5：桌面端球上的红点/引导气泡读这些 ----------------------------
       startedAt: STARTED_AT,
       tunnelUrl: String(gate.getStatus?.()?.tunnel?.url || '').replace(/\/$/, ''),
@@ -339,12 +355,10 @@ export function registerPanel(ctx, { state, gate, getAddresses, getQrBase = null
         try {
           const { id, trusted, remove, removeAll, note } = await readJson(req)
           if (removeAll) {
-            for (const d of [...state.devices]) {
-              // 删除 = 先撤销信任，再把人从列表里拿掉（不留「已删但仍信任」的中间态）
-              state.untrustDevice(d.id)
-              state.removeDevice(d.id)
-            }
-            gate.noteEvent?.('device', '电脑端把已配对设备全部撤销并删除')
+            // v1.8.31：一次清空（设备一删，旧 token 就签不出人来了 ——
+            // currentDevice() 里查 devices 找不到就返回 null，cookie / passKey 一起失效）
+            const n = state.removeAllDevices()
+            gate.noteEvent?.('device', `电脑端把已配对设备全部撤销并删除（${n} 台）`)
             return json(res, 200, snapshot())
           }
           if (remove) {

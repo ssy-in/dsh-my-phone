@@ -15,7 +15,18 @@
 
   // 尺寸：跟旧版 React 球一致（宽 135、按紧裁图标比例 512×459 得高约 121）
   // v1.6.1 临时开关：true = 用纯 DOM 球与纯 DOM 弹窗（v1.5.0 那套）；
-  var TILE = 121
+  // v1.8.32：手机端球缩小 40%（用户：「手机端logo小40%」）。
+  // 判定放在最前面，TILE 一改，位置锚点 / 拖拽边界 / 贴边旋转都会跟着走。
+  var IS_MOBILE = (function () {
+    try {
+      if (/Android|iPhone|iPad|iPod|Mobile|HarmonyOS/i.test(String(navigator.userAgent || ''))) return true
+      if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) return true
+    } catch (e) {
+      /* 取不到就当桌面 */
+    }
+    return false
+  })()
+  var TILE = IS_MOBILE ? 73 : 121
   var RATIO = 459 / 512
   var W = TILE
   var H = Math.round(TILE * RATIO)
@@ -34,8 +45,20 @@
   }
 
   var state = null
+  // v1.8.32：面板重画钩子。顶层函数（如 soundRows）不能直接引用 createPanel() 内的 render()，
+  // 由 createPanel() 在初始化时把 _requestRender 指过去。
+  var _requestRender = function () {}
+  function requestRender() {
+    try {
+      _requestRender()
+    } catch (e) {
+      /* 面板还没建起来就忽略 */
+    }
+  }
   var data = null
   var remote = null // 手机上拿到的是只读快照（/__myphone/state）
+  var remoteMode = false // v1.8.27：确认这端只能走只读快照，别再每轮先撞一次 404
+  var remoteSince = 0 // 进入只读模式的时刻（用来每分钟回探一次管理口）
   var el = null
   var dot = null
   var bubble = null
@@ -82,6 +105,35 @@ var bubbleBusyTimer = 0
       /* 存不了就只在本次会话生效 */
     }
     // 告诉服务端「这些通知已读」，红点随之清零
+    // v1.8.29：手机上 post('read') 走的是 /__myphone/panel/read —— 那头只认回环地址，
+    // 手机必然 404，所以「NEW 和红点」在手机上永远消不掉。远端模式改走公网口的 /__myphone/ack。
+    if (remoteMode) {
+      try {
+        fetch('/__myphone/ack', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-myphone-phone': '1' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ read: true }),
+        })
+          .then(function (r) {
+            return r && r.ok ? r.json() : null
+          })
+          .then(function (json) {
+            if (json && remote) {
+              remote.unread = Number(json.unread) || 0
+              remote.pendingCount = Number(json.pendingCount) || 0
+              paint()
+              if (panel && panel.isOpen()) panel.render()
+            }
+          })
+          .catch(function () {
+            /* 标不上就先本地记着 */
+          })
+      } catch (e) {
+        /* 忽略 */
+      }
+      return
+    }
     post('read', {})
   }
 
@@ -296,7 +348,9 @@ var bubbleBusyTimer = 0
               else if (kv[0] === 'click') playClick('down')
               else playLevel(kv[2])
             }
-            render()
+            // v1.8.32：soundRows() 在顶层作用域，createPanel() 里的 render() 在这儿看不见 ——
+            // 原来直接调 render() 会 ReferenceError（桌面端点开关也一样炸）。改走模块级钩子。
+            requestRender()
           },
         }),
       )
@@ -432,8 +486,11 @@ var bubbleBusyTimer = 0
    * 红点也只剩 pendingCount 那一条路。这里统一摊平成数组，`pending` 排前面。
    */
   function feedItems() {
-    if (!data) return []
-    var f = data.feed
+    // v1.8.29：手机端 data 为 null，快照在 remote 里；原来这里直接 return []，
+    // 手机上的「消息/日志」页只能画 remote.events 那 8 条原始日志（无标签、无 NEW）。
+    var src = data || remote
+    if (!src) return []
+    var f = src.feed
     if (Array.isArray(f)) return f // 兼容老形状（手机只读快照可能给的是数组）
     if (!f || typeof f !== 'object') return []
     var out = []
@@ -471,8 +528,16 @@ var bubbleBusyTimer = 0
   }
 
   function unreadCount() {
-    if (!data) return 0
-    if (typeof data.pendingCount === 'number' && data.pendingCount > 0) return data.pendingCount
+    // v1.8.29：手机上 data 永远是 null（只读快照在 remote 里）——原来这里直接
+    // `if (!data) return 0`，所以手机端的红点根本不看服务端的待处理数。
+    var src = data || remote
+    if (!src) return 0
+    if (typeof src.pendingCount === 'number' && src.pendingCount > 0) return src.pendingCount
+    if (src !== data) {
+      var rf = src.feed || {}
+      if (typeof rf.pendingCount === 'number' && rf.pendingCount > 0) return rf.pendingCount
+      return 0
+    }
     var feed = feedItems()
     var n = 0
     for (var i = 0; i < feed.length; i++) if (feed[i] && feed[i].pending) n += 1
@@ -480,7 +545,8 @@ var bubbleBusyTimer = 0
   }
 
   function summary() {
-    if (!data) return '手机连 DSH · 点一下扫码'
+    // v1.8.30：手机端 data 为 null，快照在 remote
+    if (!data && !remote) return '手机连 DSH · 点一下扫码'
     var feed = feedItems()
     for (var i = 0; i < feed.length; i++) {
       var it = feed[i]
@@ -500,7 +566,10 @@ var bubbleBusyTimer = 0
   // 「isis（iPhone）刚连进来」。未读通知会一直挂着，而授权是眼下真的在等人的事，
   // 所以授权必须排在最前面，且标签与文案必须说清「在等授权」。
   function bubbleCard() {
-    var appr = data && Array.isArray(data.approvals) ? data.approvals : []
+    // v1.8.30：手机端 data 为 null（快照在 remote），原来这里直接读 data →
+    // 手机上永远走不到授权分支，只剩最底下那句「点一下 · 手机扫码连 DSH」。
+    var base = data || remote
+    var appr = base && Array.isArray(base.approvals) ? base.approvals : []
     if (appr.length > 1) {
       var first = appr[appr.length - 1]
       return {
@@ -527,7 +596,7 @@ var bubbleBusyTimer = 0
       }
     }
     // 授权都排完了，才轮到「有人连进来」这种纯通知（只报还没点掉的）
-    var notices = data && Array.isArray(data.notices) ? data.notices : []
+    var notices = base && Array.isArray(base.notices) ? base.notices : []
     var last = notices[notices.length - 1]
     if (last && last.label) {
       return {
@@ -538,7 +607,7 @@ var bubbleBusyTimer = 0
         sign: '高级页·已配对设备里可断开',
       }
     }
-    var u = Number((data && data.unread) || 0)
+    var u = Number((base && base.unread) || 0)
     if (u > 0) {
       return {
         tag: '新连接',
@@ -644,8 +713,11 @@ var bubbleBusyTimer = 0
     var cy = r.top + r.height / 2
     var vwv = vw()
     var vhv = vh()
-    var left = cx - gap - w
-    if (left < 8) left = cx + r.width / 2 + gap
+    // v1.8.28：左边这种用「球的左边缘」算，不能用球心 ——
+    // 以前写 cx - gap - w，那是把气泡右边缘放到球心上，整个压住球的一半
+    // （右边那支写的是 r.left + r.width + gap，本来就是按边缘算的，所以只有左边出问题）。
+    var left = r.left - gap - w
+    if (left < 8) left = r.left + r.width + gap
     if (left + w > vwv - 8) left = Math.max(8, vwv - w - 8)
     var top = cy - h / 2
     top = Math.min(Math.max(8, top), Math.max(8, vhv - h - 8))
@@ -756,7 +828,9 @@ var bubbleBusyTimer = 0
         text: it.text,
       })
     }
-    var tech = data && data.feed && Array.isArray(data.feed.tech) ? data.feed.tech : []
+    // v1.8.30：这里原来写死 data，手机端 data 为 null → 技术动态一条都进不了气泡队列
+    var src = data || remote
+    var tech = src && src.feed && Array.isArray(src.feed.tech) ? src.feed.tech : []
     for (var j = 0; j < tech.length; j++) {
       var t = tech[j]
       if (!t || !t.text) continue
@@ -774,7 +848,8 @@ var bubbleBusyTimer = 0
     // 兜底：feed 还没准备好（老存档、gate 抽风、只读快照）时，
     // 用 approvals / notices 顶上，免得一条路走死、永远等不到一次气泡
     if (!out.length) {
-      var appr = data && Array.isArray(data.approvals) ? data.approvals : []
+      var base = data || remote
+      var appr = base && Array.isArray(base.approvals) ? base.approvals : []
       for (var k = 0; k < appr.length; k++) {
         var a = appr[k]
         if (!a) continue
@@ -788,7 +863,7 @@ var bubbleBusyTimer = 0
           text: String(a.text || '正在请求授权...'),
         })
       }
-      var nts = data && Array.isArray(data.notices) ? data.notices : []
+      var nts = base && Array.isArray(base.notices) ? base.notices : []
       for (var m = 0; m < nts.length; m++) {
         var n = nts[m]
         if (!n || !n.label) continue
@@ -906,6 +981,18 @@ var bubbleBusyTimer = 0
   }
 
   function refresh() {
+    // v1.8.27：记住「这台机器只能拿只读快照」。
+    // 手机上 /__myphone/panel 必然 404（管理口只给回环地址），原来每 6 秒都要先吃一次
+    // 404、再转去 /__myphone/state —— 白跑一趟。这里一旦确认是远端模式，就直接打 state，
+    // 每轮少一次往返。哪次面板口又能连上了（桌面端），自动切回来。
+    if (remoteMode) {
+      // 一分钟探一次管理口：桌面端万一刚才只是偶发失败，别让它永远卡在只读模式
+      if (Date.now() - remoteSince < 60_000) {
+        loadRemote()
+        return
+      }
+      remoteMode = false
+    }
     try {
       fetch(API, { headers: { 'x-myphone-panel': '1' }, credentials: 'same-origin' })
         .then(function (r) {
@@ -919,6 +1006,7 @@ var bubbleBusyTimer = 0
             return
           }
           remote = null // 管理口又能连上了：回到本地可写模式
+          remoteMode = false
           data = json
           paint()
           autoBubble()
@@ -943,6 +1031,12 @@ var bubbleBusyTimer = 0
           if (!json || !json.device) return
           remote = json
           data = null
+          // 拿到只读快照 = 这端就是手机：下一轮直接打这儿，不再先去撞管理口的 404
+          if (!remoteMode) remoteSince = Date.now()
+          remoteMode = true
+          // v1.8.29：只读快照也要刷红点。原来只 render 面板，悬浮球上的点
+          // 永远停在上一次本地快照的数字上（手机端根本收不到本地快照）。
+          paint()
           if (panel && panel.isOpen()) panel.render()
         })
         .catch(function () {
@@ -954,6 +1048,10 @@ var bubbleBusyTimer = 0
   }
 
   function paint() {
+    // v1.8.32：手机端「logo 比连上桌面还早」的修法 —— 球一开始透明，等第一帧快照
+    // （本地 data 或手机只读 remote）到了再显形。启动时 boot() 里有 2.5 秒兜底，
+    // 万一快照一直拿不到（凭据失效等），球照样会亮，不会让人连「重新扫码」都点不到。
+    revealBall()
     // 提示音改由气泡队列统一负责（pumpBubble 里播）：一条消息 = 一次气泡 + 一次音，
     // 这样才不会「paint 响一遍、队列又响一遍」重复。这里不再播。
     if (dot) {
@@ -974,6 +1072,8 @@ var bubbleBusyTimer = 0
   function boot() {
     loadAudio()
     refresh()
+    // v1.8.32：球默认透明，等第一帧快照到了再显形；2.5 秒兜底（快照拿不到也要能点开面板重新扫码）
+    setTimeout(revealBall, 2500)
     // 推送：SSE 到了就用它，断了退回 6 秒一次轮询
     try {
       var es = new EventSource(API + '/stream')
@@ -1138,18 +1238,18 @@ var bubbleBusyTimer = 0
     dot.className = 'dmp-w-dot'
     dot.style.cssText = [
       'position:absolute',
-      'top:-4px',
-      'right:-4px',
-      'min-width:24px',
-      'height:24px',
-      'padding:0 7px',
+      'top:-3px',
+      'right:-3px',
+      'min-width:17px',
+      'height:17px',
+      'padding:0 5px',
       'border-radius:999px',
       'background:#e6382b',
       'color:#fff',
-      'font:800 13px/24px system-ui,-apple-system,"PingFang SC",sans-serif',
+      'font:800 10.5px/17px system-ui,-apple-system,"PingFang SC",sans-serif',
       'text-align:center',
       'display:none',
-      'box-shadow:0 2px 6px rgba(180,20,10,.35)',
+      'box-shadow:0 1px 4px rgba(180,20,10,.3)',
       'pointer-events:none',
     ].join(';')
     el.appendChild(dot)
@@ -1224,7 +1324,22 @@ var bubbleBusyTimer = 0
     }
 
     document.documentElement.appendChild(el)
+    // v1.8.32：先透明待命 —— 等第一帧快照（paint() 里的 revealBall）到了才显形，
+    // 这样「手机端 logo 比连上桌面还早出现」就没了：没连上之前它不亮相。
+    el.style.opacity = '0'
     applyPos()
+  }
+
+  // 球从透明淡入。只做一次；boot() 里 2.5 秒兜底调用，避免快照永远拿不到时球不出现。
+  var revealed = false
+  function revealBall() {
+    if (revealed || !el) return
+    revealed = true
+    try {
+      el.style.opacity = '1'
+    } catch (e) {
+      /* 忽略 */
+    }
   }
 
   function ensureCss() {
@@ -1232,7 +1347,7 @@ var bubbleBusyTimer = 0
     var st = document.createElement('style')
     st.id = 'dmp-w-css'
     st.textContent = [
-      '#dsh-my-phone-widget{transition:transform .34s cubic-bezier(.34,1.56,.64,1),filter .18s ease}',
+      '#dsh-my-phone-widget{transition:transform .34s cubic-bezier(.34,1.56,.64,1),filter .18s ease,opacity .3s ease}',
       '#dsh-my-phone-widget.dmp-w-hover{transform:translateY(-8px) scale(1.06);filter:drop-shadow(0 14px 24px rgba(8,38,56,.34))}',
       '#dsh-my-phone-widget:active{transform:scale(.93);transition-duration:.12s}',
       '.dmp-w-bubble{position:fixed;z-index:2147483647;width:232px;padding:12px 16px 13px;border-radius:14px;',
@@ -1271,15 +1386,27 @@ var bubbleBusyTimer = 0
       '#dmp-panel .dmp-hint{margin:6px 0 0;font-size:12px;color:#5f7688;line-height:1.6}',
       '#dmp-panel .dmp-lead{margin:16px 0 0;font-size:15px;font-weight:800;color:var(--ink);letter-spacing:.01em}',
       '#dmp-panel .dmp-sub{margin:5px 0 0;font-size:12.5px;color:var(--ink3)}',
-      '#dmp-panel .dmp-qr{margin:16px auto 0;width:214px;height:214px;background:#fff;border:1px solid #dbeaf1;border-radius:16px;',
+      '#dmp-panel .dmp-qr{margin:0;width:214px;height:214px;background:#fff;border:1px solid #dbeaf1;border-radius:16px;',
       '  display:flex;align-items:center;justify-content:center;padding:9px;position:relative}',
       '#dmp-panel .dmp-qr svg{width:100%;height:100%;display:block}',
       '#dmp-panel .dmp-qr.dead{filter:grayscale(1) opacity(.42)}',
       '#dmp-panel .dmp-dead{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;',
       '  font:800 15px/1 inherit;color:#c0271b;background:rgba(255,255,255,.72);border-radius:16px;letter-spacing:2px}',
       '#dmp-panel .dmp-empty{color:#7b8fa1;font-size:12.5px;text-align:center;padding:56px 10px}',
-      '#dmp-panel .dmp-ttl{margin:10px 0 0;text-align:center;font:700 12.5px/1.5 ui-monospace,Menlo,monospace;color:#0a7a4b}',
+      '#dmp-panel .dmp-ttl{margin:8px 0 0;max-width:252px;text-align:center;font:700 12px/1.5 ui-monospace,Menlo,monospace;color:#0a7a4b;font-variant-numeric:tabular-nums}',
       '#dmp-panel .dmp-ttl.dead{color:#c0271b}',
+      '#dmp-panel .dmp-qrnote{margin:5px 0 0;text-align:center;font:600 11.5px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;color:#5a7484}',
+      '#dmp-panel .dmp-qrsw{margin:12px auto 0;width:100%;display:flex;justify-content:center}',
+      '#dmp-panel .dmp-qrsw.switchable{cursor:pointer;-webkit-tap-highlight-color:transparent}',
+      '#dmp-panel .dmp-qrcard{display:flex;flex-direction:column;align-items:center;animation:dmpQrIn .22s ease}',
+      '#dmp-panel .dmp-qrcard .dmp-qr{position:relative}',
+      '@keyframes dmpQrIn{from{opacity:0;transform:translateX(10px) scale(.985)}to{opacity:1;transform:none}}',
+      // v1.8.34：切换条做成分段页签的样子 —— 选中的实心填色、白字，一眼看出现在看的是哪张
+      '#dmp-panel .dmp-sidesw{display:flex;justify-content:center;margin:2px 0 0}',
+      '#dmp-panel .seg.side{display:flex;gap:0;width:100%;max-width:270px;padding:3px;border:1px solid #cfe3ee;border-radius:12px;background:#f1f8fb}',
+      '#dmp-panel .seg.side button{flex:1;height:32px;min-width:0;border:0;border-radius:9px;background:transparent;color:#5a7484;font:700 12.5px/1 system-ui;padding:0 6px}',
+      '#dmp-panel .seg.side button.on{background:#0b7f8c;color:#fff;box-shadow:0 2px 8px rgba(11,127,140,.35)}',
+      '#dmp-panel .seg.side button:active{transform:scale(.98)}',
       '#dmp-panel .dmp-link{display:flex;gap:8px;align-items:center;margin-top:12px;background:#eef5f9;border:1px solid #dceaf1;border-radius:11px;padding:8px 10px}',
       '#dmp-panel .dmp-link code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
       '  font:11.5px/1.5 ui-monospace,Menlo,monospace;color:#26485c}',
@@ -1348,8 +1475,11 @@ var bubbleBusyTimer = 0
       '#dmp-panel *::-webkit-scrollbar-thumb{background:#d6e6ee;border-radius:999px}',
       '#dmp-panel *::-webkit-scrollbar-thumb:hover{background:#bcdfea}',
       '#dmp-panel *::-webkit-scrollbar-track{background:transparent}',
-      '#dmp-w-dot{animation:dmp-pulse 1.8s ease-in-out infinite}',
-      '@keyframes dmp-pulse{0%,100%{box-shadow:0 0 0 0 rgba(224,48,48,.55)}50%{box-shadow:0 0 0 6px rgba(224,48,48,0)}}',
+      // v1.8.28：红点缩小，动效改成「若隐若现」——原来是戳出去的阴影圈（像在闪），
+      // 现在改成整颗球自己的透明度轻微呼吸，安静很多。
+      '#dmp-w-dot{animation:dmp-breathe 2.6s ease-in-out infinite}',
+      '@keyframes dmp-breathe{0%,100%{opacity:1}50%{opacity:.42}}',
+      '@media (prefers-reduced-motion: reduce){#dmp-w-dot{animation:none}}',
       '#dmp-panel input[type=range]{-webkit-appearance:none;appearance:none;height:18px;background:transparent;cursor:pointer}',
       '#dmp-panel input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:999px;background:linear-gradient(90deg,#40d0d0,#0b7f8c)}',
       '#dmp-panel input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-5px;border-radius:50%;background:#fff;border:2px solid #0b7f8c;box-shadow:0 2px 6px rgba(6,40,50,.25)}',
@@ -1476,6 +1606,8 @@ var bubbleBusyTimer = 0
     ensureCss()
     var tab = 'connect'
     var logOpen = false
+    // v1.8.33：「连接」页的两张二维码卡片，哪一张在前。'' = 自动（有局域网就用局域网）
+    var qrSide = ''
     var ticker = 0
     var root = h('div', { id: 'dmp-panel' })
     root.style.display = 'none'
@@ -1497,6 +1629,10 @@ var bubbleBusyTimer = 0
     document.documentElement.appendChild(root)
 
     function close() {
+      // v1.8.29：关面板也要落「已读」。用户的正常路径是「点开 → 进消息/日志 → 看完点 × 关掉」，
+      // 全程没离开读页，所以原来那条「离开读页才 markFeedSeen」的规则一次都没触发过 ——
+      // 这就是「NEW 和红点消不掉」的直接原因。
+      if (tab === 'feed' || tab === 'advanced') markFeedSeen()
       root.style.display = 'none'
       clearInterval(ticker)
       ticker = 0
@@ -1527,24 +1663,28 @@ var bubbleBusyTimer = 0
       window.addEventListener('dsh-my-phone:closepanel', close)
     }
 
-    // 每秒只需要更新「m:ss 后失效」这一行 —— 以前是整块 render() 重建 DOM，
+    // 每秒只需要更新卡片下面那行「m:ss 后失效」—— 以前是整块 render() 重建 DOM，
     // 为了几个数字把整个面板拆了重搭，纯浪费。
     function tickTtl() {
       if (typeof document !== 'undefined' && document.hidden) return
       if (!body) return
-      var el = body.querySelector('.dmp-ttl')
-      if (!el) return
-      var exp = data && data.ticketExpiresAt ? Number(data.ticketExpiresAt) : 0
-      var left = exp > 0 ? exp - Date.now() : 0
+      var els = body.querySelectorAll ? body.querySelectorAll('.dmp-ttl') : []
+      if (!els || !els.length) return
+      var left = ttlLeft()
       if (left <= 0) {
         // 到点了才需要整块重画（把二维码变灰 + 文案换成「已失效」）
-        if (String(el.className || '').indexOf('dead') < 0) render()
+        for (var i = 0; i < els.length; i += 1) {
+          if (String(els[i].className || '').indexOf('dead') < 0) {
+            render()
+            return
+          }
+        }
         return
       }
-      var mm = Math.floor(left / 60000)
-      var ss = Math.floor((left % 60000) / 1000)
-      var txt = mm + ':' + (ss < 10 ? '0' + ss : ss) + ' 后失效 · 过期后手动换一张'
-      if (el.textContent !== txt) el.textContent = txt
+      var txt = leftText(left)
+      for (var j = 0; j < els.length; j += 1) {
+        if (els[j].textContent !== txt) els[j].textContent = txt
+      }
     }
 
     function tabBtn(key, label) {
@@ -1572,16 +1712,165 @@ var bubbleBusyTimer = 0
       tabsBar.appendChild(tabBtn('advanced', '高级'))
     }
 
-    // 二维码块：有票就画 svg，没票给占位；过期盖「已失效」
-    function qrBlock() {
-      var svg = data && data.qrSvg ? String(data.qrSvg) : ''
-      var left = data && data.ticketExpiresAt ? data.ticketExpiresAt - Date.now() : 0
+    // ---- v1.8.34：「连接」页两张二维码卡片（局域网 / 外出）--------------------
+    // 局域网 / 外出共用同一张一次性票据，只是 base 不同（服务端一次给两张 SVG）。
+    //  · 只开了一个连接就只出一张（不出切换条）；两个都关 → 提示去高级页开
+    //  · 默认给局域网（快），出门才切外出
+    //  · 倒计时单独一行贴在码下面，适用条件单独一行 —— 不再挤成一大截绿字
+    //  · 复制前先回读一次快照：票过期就先换一张，绝不把旧地址塞进剪贴板
+    function qrSides() {
+      var out = []
+      if (data && data.lanEnabled) out.push('lan')
+      if (data && data.tunnelEnabled) out.push('tun')
+      return out
+    }
+    function curSide() {
+      var list = qrSides()
+      if (qrSide && list.indexOf(qrSide) >= 0) return qrSide
+      return list[0] || ''
+    }
+    function qrSvgOf(side) {
+      if (side === 'lan') return data && data.qrSvgLan ? String(data.qrSvgLan) : ''
+      return data && data.qrSvg ? String(data.qrSvg) : ''
+    }
+    function pairUrlOf(side) {
+      if (side === 'lan') return data && data.lanPairUrl ? String(data.lanPairUrl) : ''
+      return data && data.pairUrl ? String(data.pairUrl) : ''
+    }
+    // 适用条件（短句），放在标题下面一行
+    function sideNote(side) {
+      if (side === 'lan') return '只有手机和电脑在同一个网络才能连接'
+      return '任何时间都能连接（速度低于局域网）'
+    }
+    // 倒计时单独成行：m:ss 后失效
+    function leftText(left) {
+      var mm = Math.floor(left / 60000)
+      var ss = Math.floor((left % 60000) / 1000)
+      return mm + ':' + (ss < 10 ? '0' + ss : ss) + ' 后失效'
+    }
+    function ttlLeft() {
+      return data && data.ticketExpiresAt ? Math.max(0, data.ticketExpiresAt - Date.now()) : 0
+    }
+    // 「复制」不照抄屏幕上那串旧地址：先回读一次快照，票还在就复制最新地址，
+    // 票过期就先换一张再复制（点它的人要的是「现在能用的」）。
+    function copyFreshPair(side, btn) {
+      var old = btn ? String(btn.textContent || '复制') : ''
+      function say(t) {
+        if (!btn) return
+        btn.textContent = t
+        setTimeout(function () {
+          try {
+            btn.textContent = old
+          } catch (e) {
+            /* 忽略 */
+          }
+        }, 1400)
+      }
+      if (btn) btn.disabled = true
+      fetch(API, { headers: { 'x-myphone-panel': '1' }, credentials: 'same-origin' })
+        .then(function (r) {
+          return r && r.ok ? r.json() : null
+        })
+        .then(function (json) {
+          if (json) {
+            data = json
+            var exp = Number(json.ticketExpiresAt || 0)
+            var u = side === 'lan' ? json.lanPairUrl || json.lanUrl : json.pairUrl
+            if (exp > Date.now() && u) {
+              copyText(String(u))
+              if (btn) btn.disabled = false
+              say('已复制')
+              if (panel) panel.render()
+              return
+            }
+          }
+          post('ticket', {}, function (nj) {
+            var u2 = nj ? (side === 'lan' ? nj.lanPairUrl || nj.lanUrl : nj.pairUrl) : ''
+            if (u2) copyText(String(u2))
+            if (btn) btn.disabled = false
+            say(u2 ? '已换新并复制' : '换票失败')
+          })
+        })
+        .catch(function () {
+          if (btn) btn.disabled = false
+          say('复制失败')
+        })
+    }
+    // 一张卡：二维码 + 倒计时。过期就变灰并盖「已失效」
+    function qrCard(side) {
+      var svg = qrSvgOf(side)
+      var left = ttlLeft()
       var dead = !svg || left <= 0
       var box = h('div', { class: 'dmp-qr' + (dead && svg ? ' dead' : '') })
       if (svg) box.innerHTML = svg
-      else box.appendChild(h('div', { class: 'dmp-empty', text: '还没有二维码\n点下面的按钮生成' }))
+      else {
+        box.appendChild(
+          h('div', {
+            class: 'dmp-empty',
+            text: side === 'lan' ? '局域网二维码还没起来\n先确认「局域网访问」是开着的' : '还没有二维码\n点下面的按钮生成',
+          }),
+        )
+      }
       if (svg && left <= 0) box.appendChild(h('div', { class: 'dmp-dead', text: '已失效' }))
-      return box
+      var cap = h('p', {
+        class: 'dmp-ttl' + (left <= 0 ? ' dead' : ''),
+        'data-side': side,
+        text: left > 0 ? leftText(left) : '已失效 · 点下面换一张',
+      })
+      return h('div', { class: 'dmp-qrcard ' + side }, [box, cap])
+    }
+    // 卡片切换：点一下卡片 / 点上面的切换条都能换
+    function switchSide() {
+      var list = qrSides()
+      if (list.length < 2) return
+      var cur = curSide()
+      qrSide = list[(list.indexOf(cur) + 1) % list.length]
+      render()
+    }
+    // 切换条做成「两个页签」的样子：选中的实心填色，一眼看出现在看的是哪张
+    function sideSwitch() {
+      var list = qrSides()
+      if (list.length < 2) return null
+      var cur = curSide()
+      var seg = h('div', { class: 'seg side' })
+      ;[
+        ['lan', '局域网连接'],
+        ['tun', '外出连接'],
+      ].forEach(function (kv) {
+        if (list.indexOf(kv[0]) < 0) return
+        seg.appendChild(
+          h('button', {
+            class: cur === kv[0] ? 'on' : '',
+            text: kv[1],
+            onclick: function (ev) {
+              try {
+                ev.stopPropagation()
+              } catch (e) {
+                /* 忽略 */
+              }
+              if (curSide() === kv[0]) return
+              qrSide = kv[0]
+              render()
+            },
+          }),
+        )
+      })
+      return seg
+    }
+    // 两个连接都关着：不给一张假码，直接把人送去高级页开
+    function noneOpenPane() {
+      return [
+        h('p', { class: 'dmp-lead dmp-center', text: '两个连接都关着，手机进不来' }),
+        h('p', { class: 'dmp-hint dmp-center', text: '「局域网访问」和「外网访问」至少开一个，才会生成二维码。' }),
+        h('button', {
+          class: 'primary',
+          text: '去高级页打开',
+          onclick: function () {
+            tab = 'advanced'
+            render()
+          },
+        }),
+      ]
     }
 
     function connectPane() {
@@ -1619,39 +1908,47 @@ var bubbleBusyTimer = 0
         )
         return out
       }
-      out.push(qrBlock())
-      out.push(h('p', { class: 'dmp-lead dmp-center', text: '相机或者浏览器扫码连接' }))
-      out.push(h('p', { class: 'dmp-sub dmp-center', text: '扫码连接 DeepSeek Harness 桌面版' }))
-      var left = data && data.ticketExpiresAt ? Math.max(0, data.ticketExpiresAt - Date.now()) : 0
-      // v1.8.5：不再自动换票 —— 过期就让它显示「已失效」，只等人手动点按钮
-      if (left > 0) {
-        var mm = Math.floor(left / 60000)
-        var ss = Math.floor((left % 60000) / 1000)
+
+      if (!qrSides().length) return noneOpenPane()
+
+      var side = curSide()
+      var sw = sideSwitch()
+      if (sw) out.push(h('div', { class: 'dmp-sidesw' }, [sw]))
+      // 卡片区：整块可点，点了就切到另一张（只有一张时不可点）
+      out.push(
+        h(
+          'div',
+          {
+            class: 'dmp-qrsw' + (sw ? ' switchable' : ''),
+            onclick: function () {
+              switchSide()
+            },
+          },
+          [qrCard(side)],
+        ),
+      )
+      out.push(h('p', { class: 'dmp-lead dmp-center', text: '相机或浏览器扫码连接 DSH 桌面版' }))
+      out.push(h('p', { class: 'dmp-qrnote dmp-center', text: sideNote(side) }))
+      var left = ttlLeft()
+      var onlyUrl = pairUrlOf(side)
+      if (onlyUrl) {
         out.push(
-          h('p', {
-            class: 'dmp-ttl',
-            text: mm + ':' + (ss < 10 ? '0' + ss : ss) + ' 后失效 · 过期后手动换一张',
-          }),
+          h('div', { class: 'dmp-link' }, [
+            h('code', { text: onlyUrl }),
+            h('button', {
+              class: 'btn',
+              text: '复制',
+              onclick: function (ev) {
+                copyFreshPair(side, ev.currentTarget)
+              },
+            }),
+          ]),
         )
-      } else if (data && data.qrSvg) {
-        out.push(h('p', { class: 'dmp-ttl dead', text: '二维码已失效 —— 点下面的按钮换一个' }))
-      } else if (!(data && data.qrSvg)) {
+      }
+      if (!(data && data.ticketExpiresAt)) {
         out.push(h('p', { class: 'dmp-hint dmp-center', text: '点下面的按钮生成一张' }))
       }
-      if (data && data.pairUrl) {
-        var link = h('div', { class: 'dmp-link' }, [
-          h('code', { text: data.pairUrl }),
-          h('button', {
-            class: 'btn',
-            text: '复制',
-            onclick: function () {
-              copyText(data.pairUrl)
-            },
-          }),
-        ])
-        out.push(link)
-      }
-      var hasTicket = Boolean(data && data.qrSvg && left > 0)
+      var hasTicket = Boolean(qrSvgOf(side) && left > 0)
       out.push(
         h('button', {
           class: 'primary',
@@ -1781,6 +2078,8 @@ var bubbleBusyTimer = 0
     var editId = null
     var editText = ''
     var delArm = { id: '', at: 0 }
+    // v1.8.31：「删除所有设备凭证」的二次确认计时（4 秒内再点才生效）
+    var delAllArm = 0
 
     function deviceRows() {
       var list = data && Array.isArray(data.deviceList) ? data.deviceList : []
@@ -1943,7 +2242,9 @@ var bubbleBusyTimer = 0
     // v1.8.24：「正在用工具」这种高频事件不再弹气泡（只在这儿列着），
     // 其余技术动态仍然弹；都不进红点（红点只算要人判断的）。
     function techRows() {
-      var techList = data && data.feed && Array.isArray(data.feed.tech) ? data.feed.tech : []
+      // v1.8.29：手机端快照在 remote 里，data 为 null —— 这里也要认 remote
+      var src = data || remote
+      var techList = src && src.feed && Array.isArray(src.feed.tech) ? src.feed.tech : []
       if (!techList.length) return []
       var out = [
         h('div', {
@@ -1971,7 +2272,9 @@ var bubbleBusyTimer = 0
     }
 
     function logRows() {
-      var raw = data && Array.isArray(data.events) ? data.events : []
+      // v1.8.30：手机端 data 为 null，日志在 remote.events 里
+      var lsrc = data || remote
+      var raw = lsrc && Array.isArray(lsrc.events) ? lsrc.events : []
       var out = []
       var head = h('div', { class: 'row' }, [
         h('div', { class: 'grow' }, [h('div', { class: 'name', text: '排查日志' }), h('div', { class: 'meta', text: raw.length + ' 条' })]),
@@ -1992,7 +2295,7 @@ var bubbleBusyTimer = 0
             class: 'btn',
             text: '复制日志',
             onclick: function () {
-              var list = data && Array.isArray(data.events) ? data.events : []
+              var list = lsrc && Array.isArray(lsrc.events) ? lsrc.events : []
               var txt = list
                 .map(function (e) {
                   return hhmm(e.at) + ' ' + kindLabel(e.kind) + ' ' + (e.text || '')
@@ -2014,7 +2317,7 @@ var bubbleBusyTimer = 0
       }
       out.push(head)
       if (logOpen) {
-        var box = h('div', { style: 'max-height:170px;overflow:auto;border:1px solid #e3eef4;border-radius:10px;padding:8px;background:#fff' })
+        var box = h('div', { class: 'dmp-logbox', style: 'max-height:170px;overflow:auto;border:1px solid #e3eef4;border-radius:10px;padding:8px;background:#fff' })
         raw.slice(-40).reverse().forEach(function (e) {
           box.appendChild(h('div', { class: 'feed' }, [h('div', { class: 'tx', text: e.text || '' }), h('div', { class: 'tm', text: hhmm(e.at) + ' · ' + kindLabel(e.kind) })]))
         })
@@ -2042,19 +2345,11 @@ var bubbleBusyTimer = 0
           ]),
         )
         rOut.push(h('div', { class: 'dmp-hint', text: '这台电脑上一共 ' + (remote.devices || 0) + ' 台设备连着。' }))
-        rOut.push(h('h4', { text: '消息' }))
-        var evs = Array.isArray(remote.events) ? remote.events.slice(-8).reverse() : []
-        if (!evs.length) rOut.push(h('div', { class: 'dmp-hint', text: '暂时没有新消息。' }))
-        evs.forEach(function (e) {
-          rOut.push(
-            h('div', { class: 'feed' }, [
-              h('div', { class: 'it p2' }, [
-                h('div', { class: 'top' }, [h('span', { class: 'tag t2', text: kindLabel(e.kind) })]),
-                h('div', { class: 'tx', text: e.text || '' }),
-                h('div', { class: 'tm', text: hhmm(e.at) }),
-              ]),
-            ]),
-          )
+        // v1.8.32：高级页不再堆消息（消息/日志 已单独一页），这里只留设置项。
+        // 音效设置是手机本地偏好（localStorage），电脑端与手机端各存各的，可以直接在这里操作。
+        rOut.push(h4i('音效', '只是提示音，不影响连接：滑入滑出、按下松手各一声短音；气泡音按优先级 P0 五声 / P1 三声 / P2 两声。'))
+        soundRows().forEach(function (n) {
+          rOut.push(n)
         })
         return rOut
       }
@@ -2070,25 +2365,7 @@ var bubbleBusyTimer = 0
       )
       // v1.8.25：「入口」这块的说明从大标题上的「！」挪到两个开关行后面，贴合各自管的东西
       out.push(h4p('入口'))
-      function addrLine(urlValue, emptyText) {
-        if (!urlValue) {
-          return h('div', {
-            class: 'dmp-hint',
-            style: 'padding:0 0 10px',
-            text: emptyText || '地址还没起来，稍等一秒',
-          })
-        }
-        return h('div', { class: 'dmp-link', style: 'margin:0 0 10px' }, [
-          h('code', { text: urlValue }),
-          h('button', {
-            class: 'btn',
-            text: '复制',
-            onclick: function () {
-              copyText(urlValue)
-            },
-          }),
-        ])
-      }
+      // v1.8.34：这一页不再重复贴「链接 + 复制」—— 地址和复制都收进「连接」页的二维码卡片里了
       out.push(
         switchRowI(
           '局域网访问',
@@ -2100,7 +2377,6 @@ var bubbleBusyTimer = 0
           },
         ),
       )
-      out.push(addrLine(lan ? String((data && data.lanUrl) || '') : ''))
       out.push(
         switchRowI(
           '外网访问',
@@ -2112,8 +2388,6 @@ var bubbleBusyTimer = 0
           },
         ),
       )
-      // v1.8.25：外网访问下面补一行「连接（地址）+ 复制」
-      out.push(addrLine(tun ? String((data && data.tunnelUrl) || '') : '', '外网关着，打开上面那个开关才会生成地址'))
       out.push(
         segRow(
           '外网自动关闭',
@@ -2127,6 +2401,30 @@ var bubbleBusyTimer = 0
       deviceRows().forEach(function (n) {
         out.push(n)
       })
+      // v1.8.31：一键清掉所有设备凭证（用户要求）。放在设备列表正下方 ——
+      // 手机上想「把别人踢干净」时不用一台一台点。
+      var devCount = data && Array.isArray(data.deviceList) ? data.deviceList.length : 0
+      if (devCount) {
+        var allArmed = Date.now() - delAllArm < 4000
+        out.push(
+          h('div', { style: 'display:flex;justify-content:flex-end;margin:-2px 0 10px' }, [
+            h('button', {
+              class: 'btn ' + (allArmed ? 'danger' : 'ghost'),
+              text: allArmed ? '确认清除全部（' + devCount + ' 台）' : '删除所有设备凭证',
+              style: allArmed ? 'background:#ffe2dd;border-color:#e8a49b' : '',
+              onclick: function () {
+                if (!allArmed) {
+                  delAllArm = Date.now()
+                  render()
+                  return
+                }
+                delAllArm = 0
+                post('device', { removeAll: true })
+              },
+            }),
+          ]),
+        )
+      }
       out.push(h4i('音效', '只是提示音，不影响连接：滑入滑出、按下松手各一声短音；气泡音按优先级 P0 五声 / P1 三声 / P2 两声。'))
       soundRows().forEach(function (n) {
         out.push(n)
@@ -2142,20 +2440,23 @@ var bubbleBusyTimer = 0
     // 第三个 tab：消息 + 技术动态 + 排查日志（v1.8.22）
     function feedPane() {
       if (remote) {
+        // v1.8.29：手机端也走同一套信笺卡片（feedItems() 现在认 remote 快照），
+        // 而不是把 remote.events 那几十条原始日志糊上去 —— 那样没有标签、没有 NEW、也没有顺序。
         var rOut = []
-        var evs = Array.isArray(remote.events) ? remote.events.slice(-20).reverse() : []
-        rOut.push(h4i('消息', '这台手机是只读视图，消息在电脑上的悬浮球里看。'))
-        if (!evs.length) rOut.push(h('div', { class: 'dmp-hint', text: '暂时没有新消息。' }))
-        var rWrap = h('div', { class: 'feed' })
-        evs.forEach(function (e) {
-          rWrap.appendChild(
-            h('div', { class: 'it p2' }, [
-              h('div', { class: 'tx', text: e.text || '' }),
-              h('div', { class: 'tm', text: hhmm(e.at) + ' · ' + (e.kind || '') }),
-            ]),
-          )
+        rOut.push(
+          h4i('消息', '按时间倒序；P0 金（要你决定）/ P1 橙（值得留意）/ P2 蓝（普通）。离开这一页或关掉面板时记已读。'),
+        )
+        feedRows().forEach(function (n) {
+          rOut.push(n)
         })
-        if (evs.length) rOut.push(rWrap)
+        techRows().forEach(function (n) {
+          rOut.push(n)
+        })
+        // v1.8.32：手机端这里也补上「排查日志」（用户：消息/日志 tabs 里加上日志）
+        rOut.push(h4i('排查日志', '连接、证书、隧道每一步都记着；出问题先复制这段。'))
+        logRows().forEach(function (n) {
+          rOut.push(n)
+        })
         return rOut
       }
       var out = []
@@ -2187,10 +2488,15 @@ var bubbleBusyTimer = 0
           var nodes = tab === 'connect' ? connectPane() : tab === 'feed' ? feedPane() : advancedPane()
           // 新内容准备完毕才动旧 DOM：算的时候抛异常也不会把页面清成空白
           renderTabs()
+          // v1.8.27：重建前记住滚动位置，重建后放回去。
+          // 原来 body.textContent='' 会把里面所有滚动容器的 scrollTop 一起清零，
+          // 于是「消息/日志」页往下看几条，一有新消息（或 SSE 一来）就跳回第一行。
+          var keepScroll = snapshotScroll()
           body.textContent = ''
           nodes.forEach(function (n) {
             if (n) body.appendChild(n)
           })
+          restoreScroll(keepScroll)
         } catch (e) {
           /* 渲染失败不要连累宿主 */
         }
@@ -2200,17 +2506,61 @@ var bubbleBusyTimer = 0
     }
     var renderQueued = false
     var lastPaintSig = ''
+    // v1.8.32：把面板的 render 挂到模块级钩子，供顶层的 soundRows() 回调使用
+    _requestRender = render
+
+    // v1.8.27：滚动位置的保存/恢复。
+    // 面板每次重画都是「清空 body → 重新 append」，新节点的 scrollTop 天然是 0，
+    // 所以往下翻着看消息时，只要来一条新消息（或 SSE 推一帧）就跳回第一行。
+    // 这里按「容器 + 序号」把位置记下来，重画完放回去。
+    var SCROLL_SEL = '.feed, .dmp-logbox'
+    function scrollBoxes() {
+      var list = []
+      if (!body) return list
+      // body 自己是「高级页 / 消息页」的整体滚动容器
+      list.push(body)
+      var inner = body.querySelectorAll ? body.querySelectorAll(SCROLL_SEL) : []
+      for (var i = 0; i < inner.length; i++) list.push(inner[i])
+      return list
+    }
+    function snapshotScroll() {
+      try {
+        return scrollBoxes().map(function (n) {
+          return Number(n.scrollTop) || 0
+        })
+      } catch (e) {
+        return []
+      }
+    }
+    function restoreScroll(saved) {
+      if (!saved || !saved.length) return
+      try {
+        var boxes = scrollBoxes()
+        for (var i = 0; i < boxes.length && i < saved.length; i++) {
+          if (saved[i]) boxes[i].scrollTop = saved[i]
+        }
+      } catch (e) {
+        /* 老浏览器设不上就算了，不影响内容 */
+      }
+    }
 
     // 只挑「会影响画面」的字段做指纹
     function fingerprint() {
       try {
-        var d = data || {}
+        // v1.8.29：手机端 data 为 null、快照在 remote 里 —— 原来这里固定取 data，
+        // 手机端每一帧的指纹都是同一串「全 undefined」，指纹永远不变 →
+        // 面板内容变了也不重画（「消息/日志」页看着像卡住）。
+        var d = data || remote || {}
         return JSON.stringify([
           d.lanEnabled,
           d.tunnelEnabled,
           d.tunnelUrl,
           d.lanUrl,
           d.pairUrl,
+          // v1.8.33：局域网那张码和当前展示的是哪张，也进指纹
+          d.lanPairUrl,
+          d.lanAvailable,
+          qrSide,
           d.ticketExpiresAt,
           d.tunnelAutoOffMinutes,
           d.mutedUntil,
@@ -2240,6 +2590,9 @@ var bubbleBusyTimer = 0
           tab,
           editId,
           logOpen,
+          // v1.8.31：「删除所有设备凭证」按一下会进二次确认态，这个状态必须进指纹，
+          // 否则指纹没变 → render() 直接 return，按钮点上去一点反应都没有。
+          delAllArm,
           // v1.8.26 修：这一行原来写的是 `infoOpen`，而这个变量在整个文件里从未声明过 →
           // fingerprint() 每次都抛 ReferenceError，被下面的 catch 吞掉后返回 ''，
           // 空串让 `sig === lastPaintSig` 永远不成立 → 每次轮询都整块重建面板 DOM。

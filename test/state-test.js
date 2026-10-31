@@ -122,5 +122,20 @@ check('重新载入后设置与设备都还在（落盘可用）', () => {
   assert.equal(again.devices.length, state.devices.length)
 })
 
+check('一键清空所有设备（v1.8.31）', () => {
+  const ua2 = 'Mozilla/5.0 (Linux; Android 14)'
+  state.upsertDevice('Android 设备', ua2)
+  // 前面的用例可能已经留了设备，这里只要求「返回清掉的台数」与清空前一致
+  const before = state.devices.length
+  assert.ok(before >= 1)
+  assert.equal(state.removeAllDevices(), before)
+  assert.equal(state.devices.length, 0)
+  // 清空后再清一次是 0（幂等，不报错）
+  assert.equal(state.removeAllDevices(), 0)
+  // 落盘也是空的
+  const reloaded = new MyPhoneState(dir)
+  assert.equal(reloaded.devices.length, 0)
+})
+
 fs.rmSync(dir, { recursive: true, force: true })
-console.log(`\n${pass}/10 通过`)
+console.log(`\n${pass}/11 通过`)

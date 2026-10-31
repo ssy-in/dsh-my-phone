@@ -138,11 +138,28 @@ export function createGate({
   const failures = new Map()
   let onSettingsChanged = null
 
+  // 人要看的：入口/地址类 + 会话层面的「失败 / 重试 / 模型不可用」（v1.2.3）
+  // 这两个集合以前定义在 buildFeed() 上方，可 note() 也要用，所以挪上来。
+  const HUMAN_KINDS = new Set(['tunnel', 'autooff', 'entry', 'turnfail', 'retry', 'model', 'longrun', 'ctx', 'turnok'])
+  // 其中这些是「值得留意」的 P1（橙色 + 感叹号），其余人工动态是 P2
+  const WARN_KINDS = new Set(['turnfail', 'retry', 'model', 'longrun', 'ctx'])
+  // v1.8.30：这类只留排查日志，不进「消息」也不进「技术动态」。
+  // 「会话在等授权」已经在 pending 里有一张带 id 的卡了，再在技术动态里出现一次
+  // 既重复又误导（用户就是看到技术动态里有「会话在等授权」才问是不是出错了）。
+  const QUIET_KINDS = new Set(['approval'])
+
   /**
    * 最近 40 条动静，只放内存：面板里直接展示「刚刚发生了什么」，
    * 用户问「为什么连不上」时不用去翻文件。只存结论，不含凭据。
+   *
+   * v1.8.30：技术类事件再单独存一条环（techEvents）。原来只有这一个 40 条的
+   * 公共缓冲，`turnok`/`longrun` 这种高频人工事件几分钟就把位置占满 —— 实测
+   * 40 条里 19 条 turnok、10 条 longrun，真正的技术动态（扫描 401、上游 503）
+   * 全被挤没了，用户看到「技术动态」只剩两条就问「这里漏数据了吧」。
+   * 现在两条环各管各的，互不挤占。
    */
   const events = []
+  const techEvents = []
   let eventSeq = 0
   let addressChangedAt = 0
 
@@ -166,8 +183,16 @@ export function createGate({
   function note(kind, text) {
     // v1.2.0：事件带自增序号，前端要能稳定认「同一条」并做合并
     eventSeq += 1
-    events.push({ seq: eventSeq, at: Date.now(), kind, text: String(text).slice(0, 240) })
+    const row = { seq: eventSeq, at: Date.now(), kind, text: String(text).slice(0, 240) }
+    // 主环（排查日志 / 人工动态）只留 40 条
+    events.push(row)
     if (events.length > 40) events.shift()
+    // v1.8.30：技术类事件另存一环保底，不受人工事件冲挤；
+    // 技术环也只在技术类进来时才增长，所以不会无限膨胀。
+    if (!HUMAN_KINDS.has(kind)) {
+      techEvents.push(row)
+      if (techEvents.length > 60) techEvents.shift()
+    }
     // 入口地址换了：桌面端要在球上提示「地址变了，手机重新扫一次就行」
     if (kind === 'tunnel') addressChangedAt = Date.now()
     emitChange()
@@ -227,6 +252,11 @@ export function createGate({
   const APPROVAL_MERGE_MS = 8_000
   // 0 = 不按时间淘汰：等人工处理、或者自己点掉（用户要求「不自动消失」）
   const APPROVAL_TTL_MS = 0
+  // v1.8.29：宿主没给 approvalId 的那批（`id === ''`）永远等不到 approval/decided，
+  // 一旦宿主那边换了 id 或者授权是在别的通道答的，就会永久挂在「等授权」里把红点顶住
+  // （实测挂了 8 条、从昨晚 22:52 一直挂到今早）。这批只留 20 分钟兜底 ——
+  // 有 id 的那批依旧不按时间淘汰，保持「不自动消失」。
+  const APPROVAL_NOID_TTL_MS = 20 * 60_000
   const approvals = []
   let approvalSeq = 0
   const shortTitle = (title) => {
@@ -253,6 +283,15 @@ export function createGate({
       last.count += 1
       last.at = now
       if (!last.tool && name) last.tool = name
+      // v1.8.29：合并窗里又来了新的 approvalId，也得记住 —— 否则这一行永远
+      // 攥着第一次那个 id，后面 decided 来的是新 id，匹配不上，这行就删不掉了。
+      // 用一个 ids 数组记住窗口内所有 id（保留 id 字段 = 第一个，向后兼容），
+      // decideApproval 命中任意一个就算这条已经答掉了。
+      if (approvalId) {
+        if (!Array.isArray(last.ids)) last.ids = last.id ? [last.id] : []
+        const nid = String(approvalId)
+        if (last.ids.indexOf(nid) < 0) last.ids.push(nid)
+      }
       last.name = approvalHead(last.title, last.tool)
       last.text = approvalText(last.title, last.count, last.tool)
       emitChange()
@@ -260,18 +299,50 @@ export function createGate({
     }
     approvalSeq += 1
     const row = { seq: approvalSeq, at: now, sessionId: sid, title: String(title || ''), tool: name, count: 1, id: String(approvalId || '') }
+    row.ids = row.id ? [row.id] : []
     row.name = approvalHead(row.title, row.tool)
     row.text = approvalText(row.title, 1, row.tool)
+    // v1.8.29：同一个会话只保留最新那条待授权。旧的那些早该被答掉了 ——
+    // 留着只会让「等授权」越堆越多、红点数到 8 还清不掉（实测过）。
+    // 一个会话同一时刻只可能在一个审批点上等人，所以同会话的前几条一律作废。
+    for (let i = approvals.length - 1; i >= 0; i--) {
+      const a = approvals[i]
+      if (!a.outcome && a.sessionId === sid) approvals.splice(i, 1)
+    }
     approvals.push(row)
     if (approvals.length > 8) approvals.shift()
     emitChange()
     return row
   }
+
+  /**
+   * v1.8.29：这一轮结束了，它之前报的那些「等授权」不可能还挂着 —— 一次清干净。
+   * （宿主那边答完授权这一轮就继续跑，turn/end 一到就是「没人还在等」的确证。）
+   */
+  function clearApprovalsForSession(sessionId) {
+    const sid = String(sessionId || '')
+    if (!sid) return 0
+    let n = 0
+    for (let i = approvals.length - 1; i >= 0; i--) {
+      if (!approvals[i].outcome && approvals[i].sessionId === sid) {
+        approvals.splice(i, 1)
+        n += 1
+      }
+    }
+    if (n) emitChange()
+    return n
+  }
   function pendingApprovals() {
     const now = Date.now()
     const live = typeof resolveTitle === 'function' ? resolveTitle : null
     return approvals
-      .filter((a) => !a.outcome && (!APPROVAL_TTL_MS || now - a.at <= APPROVAL_TTL_MS))
+      .filter((a) => {
+        if (a.outcome) return false
+        if (APPROVAL_TTL_MS && now - a.at > APPROVAL_TTL_MS) return false
+        // 没拿到 approvalId 的：宿主那边答掉了也通知不到我们，只能靠时间兜底
+        if (!a.id && now - a.at > APPROVAL_NOID_TTL_MS) return false
+        return true
+      })
       .map((a) => {
         const fresh = live && a.sessionId ? String(live(a.sessionId) || '').trim() : ''
         const title = fresh || a.title
@@ -291,7 +362,8 @@ export function createGate({
   function decideApproval(approvalId, outcome) {
     const id = String(approvalId || '')
     if (!id) return null
-    const row = approvals.find((a) => a.id === id)
+    // 命中的是合并窗里记下的任意一个 id（同一行可能收过好几个 approvalId）
+    const row = approvals.find((a) => a.id === id || (Array.isArray(a.ids) && a.ids.indexOf(id) >= 0))
     if (!row) return null
     row.outcome = String(outcome || '')
     row.decidedAt = Date.now()
@@ -440,6 +512,7 @@ export function createGate({
    */
   function clearLogs() {
     events.length = 0
+    techEvents.length = 0
     const cleared = []
     if (logFile) {
       const dir = path.dirname(logFile)
@@ -642,10 +715,11 @@ export function createGate({
    * 手机扫码用的完整链接：入口地址 + 一次性票据。
    * 二维码里带的是「票」而不是只有地址，扫开之后还得本人点一下「信任」。
    */
-  function pairingUrl(ticket) {
+  function pairingUrl(ticket, baseOverride) {
     // 规则：外网开着 → 固定 https 隧道地址；外网关着 → 局域网 IP（见 index.js 的 qrBase）。
     // 没接 getQrBase 的老调用方（单元测试）退回第一个地址。
-    const base = getQrBase ? getQrBase() || '' : getAddresses()[0] || ''
+    // v1.8.33：可以指定 base —— 「连接」页现在同时给局域网 / 外出两张二维码（卡片可切换）。
+    const base = baseOverride || (getQrBase ? getQrBase() || '' : getAddresses()[0] || '')
     if (!base || !ticket) return ''
     return `${base.replace(/\/?$/, '/')}__myphone/pair?t=${encodeURIComponent(ticket)}`
   }
@@ -984,6 +1058,7 @@ export function createGate({
     }
     touch()
     state.touchDevice(device.id)
+    const feedNow = buildFeed()
     json(res, 200, {
       ok: true,
       device: {
@@ -999,7 +1074,11 @@ export function createGate({
       lanEnabled: Boolean(state.settings.lanEnabled),
       tunnelEnabled: Boolean(state.settings.tunnelEnabled),
       // v1.2.2：手机端也要能看消息中心（待处理 / 动态 / 技术日志），点「知道了」走 /__myphone/ack
-      feed: buildFeed(),
+      feed: feedNow,
+      // v1.8.29：手机端也要能算红点（原来只有桌面端快照带这两个字段，
+      // 手机端 unreadCount() 拿不到数字，红点自然永远是 0）
+      unread: feedNow.unread,
+      pendingCount: feedNow.pendingCount,
       lanPort: adminPort,
       publicPort,
       tunnelUrl: (() => {
@@ -1282,6 +1361,10 @@ export function createGate({
           let done = false
           if (body.ack !== undefined && body.ack !== null) done = ackApproval(body.ack) || done
           if (body.notice !== undefined && body.notice !== null) done = ackNotice(body.notice) || done
+          // v1.8.29：手机端点开「消息/日志」并离开时，要走这条把通知标已读 ——
+          // 原来是 post('read') 打到 /__myphone/panel/read，那头只认回环地址，
+          // 手机上必然 404，于是「NEW 和红点」在手机上永远消不掉。
+          if (body.read) done = markNoticesRead() || done
           const f = buildFeed()
           json(res, 200, { ok: done, pendingCount: f.pendingCount, unread: f.unread })
         } catch (err) {
@@ -1448,10 +1531,6 @@ export function createGate({
    * 之前这三样都塞在一个 events 数组里，结果「请求权限」和「扫描 401」长得一样，
    * 用户看到就问「这里怎么会有权限记录」。
    */
-  // 人要看的：入口/地址类 + 会话层面的「失败 / 重试 / 模型不可用」（v1.2.3）
-  const HUMAN_KINDS = new Set(['tunnel', 'autooff', 'entry', 'turnfail', 'retry', 'model', 'longrun', 'ctx', 'turnok'])
-  // 其中这些是「值得留意」的 P1（橙色 + 感叹号），其余人工动态是 P2
-  const WARN_KINDS = new Set(['turnfail', 'retry', 'model', 'longrun', 'ctx'])
   function buildFeed() {
     // level：0 = P0 需要你（琥珀）/ 1 = P1 留意（橙）/ 2 = P2 普通（蓝绿）
     const pending = pendingApprovals().map((a) => ({
@@ -1487,10 +1566,12 @@ export function createGate({
           level: WARN_KINDS.has(e.kind) ? 1 : 2,
         })
     human.sort((x, y) => y.at - x.at)
-    // 技术日志按 kind 合并：一次域外扫描能刷出几十条 401，逐条列没意义
+    // 技术日志按 kind 合并：一次域外扫描能刷出几十条 401，逐条列没意义。
+    // v1.8.30：数据源换成独立的 techEvents 环 —— 原来读公共 events 环，
+    // turnok/longrun 一轮就能把 40 条名额吃满，技术动态只剩最早那两条。
     const map = new Map()
-    for (const e of events) {
-      if (HUMAN_KINDS.has(e.kind)) continue
+    for (const e of techEvents) {
+      if (HUMAN_KINDS.has(e.kind) || QUIET_KINDS.has(e.kind)) continue
       const cur = map.get(e.kind) || { kind: e.kind, count: 0, at: 0, text: '' }
       cur.count += 1
       if (e.at >= cur.at) {
@@ -1500,8 +1581,8 @@ export function createGate({
       map.set(e.kind, cur)
     }
     const tech = Array.from(map.values()).sort((x, y) => y.at - x.at)
-    const techRaw = events
-      .filter((e) => !HUMAN_KINDS.has(e.kind))
+    const techRaw = techEvents
+      .filter((e) => !HUMAN_KINDS.has(e.kind) && !QUIET_KINDS.has(e.kind))
       .slice(-40)
       .reverse()
     const humanSorted = human.slice(0, 40)
@@ -1548,6 +1629,7 @@ export function createGate({
     pendingApprovals,
     ackApproval,
     decideApproval,
+    clearApprovalsForSession,
     noteAlert,
     pendingAlerts,
     dismissAlert,
