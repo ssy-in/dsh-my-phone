@@ -144,7 +144,10 @@ export function createGate({
   // 其中这些是「值得留意」的 P1（橙色 + 感叹号），其余人工动态是 P2
   // v1.8.38：`autooff`（外网入口空闲自动关闭）提到 P1 —— 它意味着「外面已经连不进来了」，
   // 按 P2 灰卡 + 一声轻响根本注意不到，用户会以为通道还开着。
-  const WARN_KINDS = new Set(['turnfail', 'retry', 'model', 'longrun', 'ctx', 'autooff'])
+  const WARN_KINDS = new Set(['turnfail', 'retry', 'model', 'longrun', 'autooff'])
+  // v1.8.40：`ctx`（上下文已用 xx%）从 P1 降到 P2 —— 它不是「出事了」，
+  // 只是提醒该压缩了；用户反馈每轮都响三声太吵。WARN 集合里拿掉后
+  // buildFeed() 会把它算成 P2（灰卡 + 一声短音 + 气泡 3 秒）。
   // v1.8.37：`question`（在等你回答）是唯一「卡在那儿等你」的事件，比 P1 更急 ——
   // 以前它不在 HUMAN_KINDS 里，落到技术动态按 P2 处理，提示音只有 2 声、气泡 3 秒就没了，
   // 跟「等你授权」完全不是一个待遇。现在归到 P0（5 声 + 气泡停 10 秒）。

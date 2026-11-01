@@ -132,5 +132,25 @@ const six = f7.human.filter((x) => x.kind === 'retry').pop()
 check('短名字不会被加省略号', !/…/.test(six.text), six.text)
 check('裁的是名字不是整条文案（后面的正文还在）', /正在重试/.test(six.text), six.text)
 
+// 10. v1.8.40：上下文提醒从 P1 降到 P2；「这一轮被停止」不进消息、只留技术日志。
+// 用户原话「上下文已用xx 是怎么判定的 感觉很频繁」「手动停止不算」。
+gate.noteEvent('ctx', '【正好六个字】 的上下文已用 92%（90% 提醒档）')
+const f8 = gate.feed()
+const cx = f8.human.filter((x) => x.kind === 'ctx').pop()
+check('「上下文已用」还在人工消息里（仍能看到）', Boolean(cx), JSON.stringify(f8.human.map((x) => x.kind)))
+check('「上下文已用」降为 P2（不再三声警报）', cx.level === 2, `level=${cx.level}`)
+gate.noteEvent('turnstop', '【正好六个字】 这一轮被停止了')
+const f9 = gate.feed()
+check(
+  '「这一轮被停止」不进人工消息（不是失败）',
+  !f9.human.some((x) => x.kind === 'turnstop'),
+  JSON.stringify(f9.human.map((x) => x.kind)),
+)
+check(
+  '「这一轮被停止」留在技术日志里可查',
+  f9.tech.some((x) => x.kind === 'turnstop'),
+  JSON.stringify(f9.tech.map((x) => x.kind)),
+)
+
 console.log(`\n${pass}/${pass + fail} 通过`)
 if (fail) process.exit(1)

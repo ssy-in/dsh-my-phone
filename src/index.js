@@ -396,8 +396,22 @@ function applyBody(ctx) {
             (s && s.meta && s.meta.mode) ||
             '',
         )
-      // 同一会话的重试提醒节流（30 秒一次就够，免得刷屏）
+      // 同一会话的重试提醒节流。v1.8.40：30 秒 → 3 分钟。
+      // 用户反馈「重试提示太频繁」：一个卡住的长任务每 30 秒响一轮 P1，太吵。
       const retryAt = new Map()
+      // v1.8.40：重试提醒延后 1.5 秒再发，中间如果等到了 turn/end = aborted
+      // （你自己按了停止），就整条取消 —— 手动停止不是「正在重试」。
+      // 事件顺序是 assistant/attempt → turn/end，所以只能延后发、事后撤销。
+      const retryPending = new Map()
+      const RETRY_HOLD_MS = 1500
+      const RETRY_MERGE_MS = 180_000
+      const cancelRetryNotice = (sid) => {
+        const p = retryPending.get(sid)
+        if (!p) return false
+        if (p.timer) clearTimeout(p.timer)
+        retryPending.delete(sid)
+        return true
+      }
       const off = ctx.on('session/event', (session, event) => {
         try {
           if (!event) return
@@ -448,21 +462,37 @@ function applyBody(ctx) {
             gate.clearApprovalsForSession?.(sid)
             const reason = evf('reason')
             const err = evf('error')
-            const bad = Boolean((reason && reason.kind && reason.kind !== 'completed') || err)
-            if (bad) {
-              const why = String((reason && reason.kind) || err || '未知原因')
+            // v1.8.40：turn/end 的 reason.kind 取值（内核 TurnEndReasonMap）：
+            // completed / aborted / blocked / error / max-tokens / interrupted / forked。
+            // 以前一律「不是 completed 就算失败」——于是你按了停止、或者 fork 出一个新会话，
+            // 都会被告知「这一轮失败了」。现在分开：
+            //   aborted / interrupted → 被停止（多半是你自己按的），只记技术日志、不弹不响
+            //   forked                → 分叉会话，不是失败
+            const rkind = String((reason && reason.kind) || '')
+            const stopped = rkind === 'aborted' || rkind === 'interrupted'
+            const forked = rkind === 'forked'
+            const bad = Boolean((rkind && !stopped && !forked && rkind !== 'completed') || err)
+            if (stopped) {
+              // 手动停止不是「正在重试」：把还在等发的那条重试提示撤掉
+              cancelRetryNotice(sid)
+              gate.noteEvent?.('turnstop', `【${title}】 这一轮被停止了`)
+            } else if (bad) {
+              const why = String(rkind || err || '未知原因')
               // v1.2.3：会话失败也弹气泡（P1 橙），消息中心同样记一条 P1
               gate.noteAlert?.('warn', `【${title}】 这一轮失败了`, { ref: `turnfail:${sid}` })
               gate.noteEvent?.('turnfail', `【${title}】 这一轮失败：${why}`)
             }
-            // 上下文用到 80% / 90% / 95% 时各提醒一次（压缩后会重置）
+            // 上下文用到 90% / 95% 时各提醒一次（压缩后会重置）。
+            // v1.8.40：去掉 80% 那档 —— 用户反馈「感觉很频繁」，80% 还早、没必要打扰。
             const ratio = contextRatio(session)
-            const bucket = ratio >= 0.95 ? 0.95 : ratio >= 0.9 ? 0.9 : ratio >= 0.8 ? 0.8 : 0
+            const bucket = ratio >= 0.95 ? 0.95 : ratio >= 0.9 ? 0.9 : 0
             const warned = ctxWarned.get(sid) || 0
             if (bucket && bucket > warned) {
               ctxWarned.set(sid, bucket)
               const pct = Math.round(ratio * 100)
-              gate.noteAlert?.('warn', `【${title}】 上下文用到 ${pct}%`, { ref: `ctx:${sid}:${bucket}` })
+              // v1.8.40：降到 P2（只响一声、气泡 3 秒）。还是先弹一个卡片说明，
+              // 但不再走 'warn'（那是 P1 且会跨会话汇总成「N 个会话出了状况」）。
+              gate.noteAlert?.('ctx', `【${title}】 上下文用到 ${pct}%`)
               gate.noteEvent?.('ctx', `【${title}】 的上下文已用 ${pct}%（${Math.round(bucket * 100)}% 提醒档）`)
             }
             // v1.8.24：这里原来会记一条「重试后已恢复正常」。用户要求去掉 ——
@@ -552,15 +582,31 @@ function applyBody(ctx) {
             return
           }
           // 一次尝试没产出（失败 / 被取消 / 流断了）就落一条 assistant/attempt，
-          // 多数情况下紧接着会自动重试 —— 给它一句「正在重试」，30 秒内同一会话只提示一次
+          // 多数情况下紧接着会自动重试 —— 给它一句「正在重试」。
+          //
+          // v1.8.40：这条事件**分不清是出错还是你按了停止**（两者都落 attempt），
+          // 所以先攒着、等 1.5 秒：这期间要是来了 turn/end = aborted，就整条撤掉
+          // （手动停止不是「正在重试」）。同一会话 3 分钟内最多提示一次，
+          // 中间的多次尝试并成一条「已重试 N 次」。
           if (event.type === 'assistant/attempt') {
             const now = Date.now()
-            const last = retryAt.get(sid) || 0
-            if (now - last > 30_000) {
-              retryAt.set(sid, now)
-              gate.noteAlert?.('warn', `【${title}】 正在重试...`, { ref: `retry:${sid}` })
-              gate.noteEvent?.('retry', `【${title}】 的一次尝试没成功，正在重试`)
-            }
+            const cur = retryPending.get(sid) || { count: 0, firstAt: now, timer: 0 }
+            cur.count += 1
+            if (cur.timer) clearTimeout(cur.timer)
+            cur.timer = setTimeout(() => {
+              retryPending.delete(sid)
+              try {
+                const last = retryAt.get(sid) || 0
+                if (Date.now() - last <= RETRY_MERGE_MS) return
+                retryAt.set(sid, Date.now())
+                const times = cur.count
+                const tail = times > 1 ? `已重试 ${times} 次` : '正在重试'
+                gate.noteAlert?.('warn', `【${title}】 ${tail}...`, { ref: `retry:${sid}` })
+                gate.noteEvent?.('retry', `【${title}】 的一次尝试没成功，${tail}`)
+              } catch {}
+            }, RETRY_HOLD_MS)
+            if (cur.timer && cur.timer.unref) cur.timer.unref()
+            retryPending.set(sid, cur)
             return
           }
           if (event.type === 'session/create') {

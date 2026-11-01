@@ -695,6 +695,9 @@ var bubbleBusyTimer = 0
     autooff: '入口自动关闭',
     entry: '入口变更',
     turnfail: '这一轮失败',
+    // v1.8.40：`turnstop` = 这一轮被你（或宿主）中止了。跟「失败」分开，
+    // 而且只进技术动态、不弹气泡。
+    turnstop: '已停止',
     // retry 现在只有一种含义了：「xx 的一次尝试没成功，正在重试」。
     // 原来同一个 kind 底下还有「重试后已恢复正常」，那种「其实没事了」的消息
     // 弹出来只会让人白紧张一次，已经不再产生（v1.8.24），标签也就可以说清。
@@ -728,7 +731,9 @@ var bubbleBusyTimer = 0
   // `tool` 是「会话名 正在用 Read」这种，一个回合里能来十几条 ——
   // 全弹的话手机隔一分钟震一次，真正的「等你授权」反而被淹掉。
   // 排查的时候照样查得到（「消息/日志」页的技术动态里全都在）。
-  var NO_BUBBLE_KIND = { tool: true }
+  // v1.8.40：`turnstop`（这一轮被停止了）也只记日志 —— 你自己按的停止，
+  // 再弹一句告诉你「停了」纯属噪音。
+  var NO_BUBBLE_KIND = { tool: true, turnstop: true }
   function bubbleSilent(kind) {
     return Object.prototype.hasOwnProperty.call(NO_BUBBLE_KIND, String(kind || ''))
   }
