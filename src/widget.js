@@ -280,7 +280,11 @@ var bubbleBusyTimer = 0
     var s = sound()
     if (!s.bubble) return
     var e = prep()
-    if (!e) return
+    if (!e) {
+      // 引擎还没到（首次加载慢、或网络抖了一下）：顺手催一次，这一声先静音，下一声就有了
+      loadAudio()
+      return
+    }
     try {
       if (level === 0) e.alert()
       else if (level === 1) e.notice()
@@ -292,12 +296,17 @@ var bubbleBusyTimer = 0
 
   // 音效引擎：独立脚本，拉到就能出声；拉不到就静音跑，不拦界面
   var audioTries = 0
+  var audioTryAt = 0
   function loadAudio() {
     if (window.__dshMyPhoneAudio) {
       prep()
       return
     }
-    if (audioTries > 6) return
+    // v1.8.39：以前试 6 次就永久放弃 —— 那之后再也不会出声，看起来正好就是
+    // 「有时候响有时候不响」。现在改成按时间限流（5 秒内最多试一次），只要引擎还缺就一直有补上的机会。
+    var nowT = Date.now()
+    if (nowT - audioTryAt < 5000) return
+    audioTryAt = nowT
     audioTries += 1
     var old = document.getElementById('dmp-audio-js')
     if (old) old.parentNode.removeChild(old)
@@ -319,6 +328,38 @@ var bubbleBusyTimer = 0
     if (!e) return
     try {
       if (typeof e.unlock === 'function') e.unlock()
+    } catch (err) {
+      /* 忽略 */
+    }
+  }
+
+  // v1.8.39：以前只有在悬浮球和面板上按下（pointerdown）才解锁音频。
+  // 结果就是「刚开机没点过球的时候，气泡全哑；点过之后才响」—— 用户感知成「有时候响有时候不响」。
+  // 现在在整个文档上兜一次（捕获阶段），点页面任何地方、按任意键、从后台切回来，都能把音频解锁。
+  var audioUnlockBound = false
+  function bindAudioUnlock() {
+    if (audioUnlockBound) return
+    audioUnlockBound = true
+    var once = function () {
+      unlockAudio()
+      if (window.__dshMyPhoneAudio) {
+        try {
+          document.removeEventListener('pointerdown', once, true)
+          document.removeEventListener('keydown', once, true)
+          document.removeEventListener('touchstart', once, true)
+        } catch (err) {
+          /* 忽略 */
+        }
+      }
+    }
+    try {
+      document.addEventListener('pointerdown', once, true)
+      document.addEventListener('keydown', once, true)
+      document.addEventListener('touchstart', once, true)
+      // 手机端从后台切回来时音频上下文可能被挂起，顺手再解一次
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) unlockAudio()
+      })
     } catch (err) {
       /* 忽略 */
     }
@@ -961,7 +1002,7 @@ var bubbleBusyTimer = 0
     var holdMs = lv <= 0 ? 10000 : lv === 1 ? 6000 : 3000
     lastShownIt = it
     showBubble(holdMs, cardFor(it))
-    playLevel(lv)
+    // v1.8.39：声音已经在消息入队时响过了（见 autoBubble），这里不再重复。
     bubbleBusyTimer = setTimeout(function () {
       bubbleBusy = false
       if (bubbleQueue.length) hideBubble()
@@ -984,7 +1025,11 @@ var bubbleBusyTimer = 0
         playedKeys[cands[i].key] = now
         if (cands[i].pending) bubbleQueue.push(cands[i])
       }
-      if (bubbleQueue.length) pumpBubble()
+      if (bubbleQueue.length) {
+        // 首次进页面时如果已经压着授权，响一次提神；历史消息一声不响，免得一开页就被淹
+        playLevel(bubbleQueue[0].level == null ? 2 : Number(bubbleQueue[0].level))
+        pumpBubble()
+      }
       return
     }
     var fresh = []
@@ -1000,9 +1045,18 @@ var bubbleBusyTimer = 0
     // 已经排着的不重复入队
     var inQueue = {}
     for (var q = 0; q < bubbleQueue.length; q++) inQueue[bubbleQueue[q].key] = true
+    var chimeN = 0
     for (var m = 0; m < fresh.length; m++) {
       if (inQueue[fresh[m].key]) continue
       bubbleQueue.push(fresh[m])
+      // v1.8.39：声音跟着「消息」走，不跟着「气泡」走 —— 只有「真的新入队」的这一条才响，
+      // 所以同一条消息不会因为反复收到快照而重复响。以前声音是在 pumpBubble() 里播的，
+      // 可面板开着时气泡会被压住排队，那段时间就一声不响；队列溢出被摘掉的几条也永远不响。
+      // 用户感知就是「有时候响有时候不响」。一批最多响 3 声，免得补一屏历史时叮叮叮炸响。
+      if (chimeN < 3) {
+        chimeN += 1
+        playLevel(fresh[m].level == null ? 2 : Number(fresh[m].level))
+      }
     }
     // 一次涌进来太多（比如手机刚连上补了一屏历史）时不能全排 —— 最多留 8 条。
     // v1.8.35：以前是 `slice(-3)` 直接截断，被截掉的那几条**没有记成已播**，
@@ -1114,6 +1168,7 @@ var bubbleBusyTimer = 0
 
   function boot() {
     loadAudio()
+    bindAudioUnlock()
     refresh()
     // v1.8.32：球默认透明，等第一帧快照到了再显形；2.5 秒兜底（快照拿不到也要能点开面板重新扫码）
     setTimeout(revealBall, 2500)

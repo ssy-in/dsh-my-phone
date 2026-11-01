@@ -154,6 +154,7 @@ const bodyEl = mkEl('body')
 documentEl.appendChild(headEl)
 documentEl.appendChild(bodyEl)
 
+const docListeners = new Map()
 const document = {
   documentElement: documentEl,
   head: headEl,
@@ -167,8 +168,18 @@ const document = {
   },
   getElementById: (id) => idMap.get(id) || null,
   contains: (n) => !!(n && all.has(n)),
-  addEventListener: () => {},
-  removeEventListener: () => {},
+  addEventListener: (type, fn) => {
+    if (!docListeners.has(type)) docListeners.set(type, [])
+    docListeners.get(type).push(fn)
+  },
+  removeEventListener: (type, fn) => {
+    const arr = docListeners.get(type) || []
+    const i = arr.indexOf(fn)
+    if (i >= 0) arr.splice(i, 1)
+  },
+  dispatch: (type, ev = {}) => {
+    for (const fn of [...(docListeners.get(type) || [])]) fn({ preventDefault() {}, ...ev })
+  },
   execCommand: () => true,
 }
 
@@ -243,7 +254,7 @@ const audioLog = []
 window.__dshMyPhoneAudio = {
   setVolume: () => {},
   setTimbre: () => {},
-  unlock: () => {},
+  unlock: () => audioLog.push('unlock'),
   enter: () => audioLog.push('enter'),
   leave: () => audioLog.push('leave'),
   press: () => audioLog.push('press'),
@@ -1332,6 +1343,79 @@ check('备注变了才重画', bodyNode.children[0] !== firstRow && allText(body
   const hex = (b2.match(/#([0-9a-fA-F]{6})/) || [])[1] || ''
   const ch = hex ? [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16)) : []
   check('P2 卡片是灰调（三通道接近）', ch.length === 3 && Math.max(...ch) - Math.min(...ch) <= 24, `${b2} → ${ch.join(',')}`)
+}
+
+// 19. v1.8.39：声音跟着「消息」走 —— 气泡被压住、队列忙的时候也必须响
+{
+  panelIs404 = false
+  remoteSnapshot = null
+  const push19 = (feed) => {
+    const snap = {
+      lanEnabled: true,
+      tunnelEnabled: false,
+      lanUrl: 'http://192.168.1.107:18391/',
+      pairUrl: 'http://192.168.1.107:18391/pair?t=abc',
+      ticketExpiresAt: Date.now() + 120000,
+      tunnelAutoOffMinutes: 0,
+      mutedUntil: 0,
+      unread: 0,
+      deviceList: [],
+      notices: [],
+      approvals: [],
+      events: [],
+      feed,
+    }
+    FakeEventSource.last.onmessage({ data: JSON.stringify(snap) })
+  }
+  const feed19 = (human, pending = []) => ({
+    pending,
+    human,
+    tech: [],
+    techRaw: [],
+    techCount: 0,
+    unread: 0,
+    pendingCount: pending.length,
+  })
+
+  // 19a. 上一条气泡还占着名额（bubbleBusy 为 true）时又来一条 —— 老版本要等上一条走完才响
+  const a0 = audioLog.length
+  const m1 = { id: 's1', seq: 501, at: Date.now(), kind: 'turnok', text: '【甲会话】一轮完成', level: 2 }
+  const m2 = { id: 's2', seq: 502, at: Date.now(), kind: 'turnok', text: '【乙会话】一轮完成', level: 2 }
+  push19(feed19([m1]))
+  push19(feed19([m2, m1]))
+  const got19a = audioLog.slice(a0)
+  check('气泡被占着时新消息也立刻响（不等队列）', got19a.length === 2 && got19a.every((x) => x === 'short'), JSON.stringify(got19a))
+
+  // 19b. 同一条消息反复收到快照，不能重复响
+  const b0 = audioLog.length
+  push19(feed19([m2, m1]))
+  push19(feed19([m2, m1]))
+  check('同一条消息反复收到快照不会重复响', audioLog.length === b0, JSON.stringify(audioLog.slice(b0)))
+
+  // 19c. 面板开着时气泡会被压住不发，但声音照响
+  const opened = (() => {
+    el.dispatch('click')
+    const r = document.getElementById('dmp-panel')
+    return Boolean(r && r.style.display === 'flex')
+  })()
+  const c0 = audioLog.length
+  push19(feed19([{ id: 's3', seq: 503, at: Date.now(), kind: 'retry', text: '【丙会话】正在重试（第 2 次）', level: 1 }], []))
+  check('面板开着时新消息照样响', opened && audioLog.slice(c0).includes('notice'), JSON.stringify(audioLog.slice(c0)))
+
+  // 19d. 一批补进一屏历史：最多响 3 声，别叮叮叮炸响
+  const d0 = audioLog.length
+  const many = []
+  for (let i = 0; i < 6; i += 1) many.push({ id: 'h' + i, seq: 600 + i, at: Date.now(), kind: 'turnok', text: `【会话${i}】一轮完成`, level: 2 })
+  push19(feed19(many))
+  const got19d = audioLog.slice(d0)
+  check('一批涌进多条时最多响 3 声', got19d.length >= 1 && got19d.length <= 3, JSON.stringify(got19d))
+  // 19e. 点文档任何地方都算「用户手势」—— 以前只在球和面板上绑，没点过球的时候音频一直是哑的
+  const e0 = audioLog.length
+  document.dispatch('pointerdown')
+  check('点页面任意位置就能解锁音频', audioLog.slice(e0).includes('unlock'), JSON.stringify(audioLog.slice(e0)))
+  const e1 = audioLog.length
+  document.dispatch('pointerdown')
+  check('解锁过一次就不再重复绑（第二次不再触发）', !audioLog.slice(e1).includes('unlock'), JSON.stringify(audioLog.slice(e1)))
 }
 
 console.log(`\n${pass}/${total} 通过`)
