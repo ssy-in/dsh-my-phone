@@ -1,5 +1,7 @@
 # DSH My Phone
 
+[![npm](https://img.shields.io/npm/v/dsh-my-phone.svg)](https://www.npmjs.com/package/dsh-my-phone) [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 > **把家里电脑上的 DSH，装进口袋。** 手机扫码即可继续对话，不用安装 App，也不注册账号。
 
 > ## 🚨 开启前必读
@@ -28,8 +30,11 @@
 ## 快速开始
 
 ```bash
-# 1. 装进当前 profile
-dsh plugin add ./dsh-my-phone --profile desktop
+# 1. 装进当前 profile（已发布到 npm）
+dsh plugin add dsh-my-phone --profile desktop
+
+#   或者装本地源码：
+#   dsh plugin add ./dsh-my-phone --profile desktop
 
 # 2. 重启 DSH，打开设置页
 #    http://127.0.0.1:8080/__myphone/   （只能在本机打开）
@@ -237,6 +242,7 @@ cmd /c mklink /J "$prof\node_modules\dsh-my-phone" "<本插件绝对路径>"
 | v1.8.35–1.8.38 | 气泡按 P0/P1/P2 停 10/6/3 秒、音效分档、三级配色 |
 | v1.8.39 | 修复「气泡有时候响有时候不响」：声音改成跟着消息走（面板开着或气泡排队时也响），点页面任意位置就能解锁音频，音效引擎加载失败不再永久放弃 |
 | v1.8.40 | 重试提示不再刷屏（手动停止不算、同会话 3 分钟并成一条「已重试 N 次」）；上下文提醒只留 90%/95% 两档并降到 P2；「这一轮被停止」不再报失败 |
+| v1.8.41 | 发布到 npm，`dsh plugin add dsh-my-phone` 直接装 |
 
 每一版的逐条改动见 [CHANGELOG.md](./CHANGELOG.md)（一版一行）；「当时为什么这么改」在 [docs/history-detail.md](./docs/history-detail.md)。
 
