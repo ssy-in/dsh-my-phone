@@ -1,0 +1,58 @@
+{
+  "repo_line_zh": "- [ssy-in/dsh-my-phone](https://github.com/ssy-in/dsh-my-phone) — 手机扫码配对后，通过局域网或 Cloudflare 隧道查看 DSH 的实时消息与授权提醒，桌面端带悬浮球。",
+  "repo_line_en": "- [ssy-in/dsh-my-phone](https://github.com/ssy-in/dsh-my-phone) - Pair a phone by QR code and follow the DSH session feed and approval prompts over the LAN or a Cloudflare tunnel, with a floating widget on the desktop.",
+  "targets": [
+    {
+      "key": "imsai",
+      "upstream": "imsai-sh/awesome-deepseek-harness-plugins",
+      "kind": "add",
+      "branch": "add-ssy-in-dsh-my-phone",
+      "path": "catalog/plugins/ssy-in--dsh-my-phone.json",
+      "content": "{\n  \"$schema\": \"../schema/plugin.schema.json\",\n  \"id\": \"ssy-in/dsh-my-phone\",\n  \"name\": \"dsh-my-phone\",\n  \"repository\": \"https://github.com/ssy-in/dsh-my-phone\",\n  \"category\": \"notify\",\n  \"description\": {\n    \"en\": \"Serves a QR pairing page from the desktop; after the phone scans it, a mobile web UI opens over the home LAN or a Cloudflare quick tunnel and shows the live session feed, approval prompts and a floating desktop widget.\",\n    \"zh\": \"在电脑端生成扫码配对页，手机扫码后通过局域网或 Cloudflare 隧道打开移动端界面，查看实时消息与授权提醒，桌面端带悬浮球。\"\n  },\n  \"added\": \"2026-11-02\"\n}\n",
+      "title": "Add ssy-in/dsh-my-phone",
+      "body": "Adds `ssy-in/dsh-my-phone` — a phone-side remote view of the DSH desktop.\n\n- The desktop plugin serves a QR pairing page; the phone scans it and gets a mobile web UI over the home LAN or a Cloudflare quick tunnel.\n- Shows the live session feed and approval prompts with sound, plus a floating ball on the desktop that opens the same panel.\n- `package.json` declares `dsh.bundle` with `cordis.yml`, so `dsh plugin add` works from git. Not published to npm yet, so the entry is browse-only for now.\n- Category `notify` because the everyday use is receiving and answering approval prompts from the phone.\n\nDocs and screenshots: https://github.com/ssy-in/dsh-my-phone"
+    },
+    {
+      "key": "beancookie",
+      "upstream": "beancookie/awesome-dsh-plugin",
+      "kind": "insert_after",
+      "branch": "add-ssy-in-dsh-my-phone",
+      "edits": [
+        {
+          "path": "README.md",
+          "anchor": "- [SeverusZh/dsh-notify-windows](https://github.com/SeverusZh/dsh-notify-windows) — Windows 通知，零依赖。",
+          "line": "- [ssy-in/dsh-my-phone](https://github.com/ssy-in/dsh-my-phone) — 手机扫码配对后，通过局域网或 Cloudflare 隧道查看 DSH 的实时消息与授权提醒，桌面端带悬浮球。"
+        },
+        {
+          "path": "README.en.md",
+          "anchor": "- [dsh-notify-windows](https://github.com/SeverusZh/dsh-notify-windows) - Windows notifications, zero dependencies.",
+          "line": "- [ssy-in/dsh-my-phone](https://github.com/ssy-in/dsh-my-phone) - Pair a phone by QR code and follow the DSH session feed and approval prompts over the LAN or a Cloudflare tunnel, with a floating widget on the desktop."
+        }
+      ],
+      "title": "Add ssy-in/dsh-my-phone",
+      "body": "Adds one line under 通知与集成 / Notifications & Integrations in both READMEs.\n\n`dsh-my-phone` lets a phone pair with the DSH desktop by scanning a QR code, then follow the live session feed and answer approval prompts over the home LAN or a Cloudflare quick tunnel. `package.json` declares `dsh.bundle` (`./cordis.yml`) and the repo carries the `dsh-plugin` topic.\n\n- repo: https://github.com/ssy-in/dsh-my-phone\n- the entry is inserted right after `SeverusZh/dsh-notify-windows`, keeping the case-insensitive alphabetical order\n\nDocs and screenshots: https://github.com/ssy-in/dsh-my-phone"
+    },
+    {
+      "key": "kejixiao",
+      "upstream": "kejixiaoliang/awesome-dsh-plugins",
+      "kind": "insert_after",
+      "branch": "add-ssy-in-dsh-my-phone",
+      "edits": [
+        {
+          "path": "plugins/notifications-channels.md",
+          "anchor": "- [dsh-remote-dsh](https://github.com/hutao562/dsh-remote-dsh)",
+          "line": "- [dsh-my-phone](https://github.com/ssy-in/dsh-my-phone) — 手机扫码接上本机 DSH 桌面：局域网或 Cloudflare 隧道打开移动端界面，看实时消息、点授权，桌面端带悬浮球"
+        }
+      ],
+      "title": "新增插件：dsh-my-phone（通知 / 渠道 / 远程）",
+      "body": "按 `docs/taxonomy.md` 归到 `notifications-channels`（对外通讯 / 远程）。\n\n`dsh-my-phone`：电脑端出一个扫码配对页，手机扫码后在局域网或 Cloudflare 隧道里打开一个移动端界面，可以看到 DSH 的实时消息、收到授权提醒并直接处理，桌面端还有一个悬浮球。`package.json` 里有 `dsh.bundle`（`./cordis.yml`），仓库带 `dsh-plugin` topic。\n\n- 仓库：https://github.com/ssy-in/dsh-my-phone\n- 条目追加在「远程」段 `dsh-remote-dsh` 之后"
+    },
+    {
+      "key": "whyihaveyou",
+      "upstream": "whyihaveyou/dsh-suite",
+      "kind": "issue",
+      "title": "[收录] ssy-in/dsh-my-phone",
+      "body": "## 插件信息\n\n- **npm 包名**：未发布 npm（从 git 安装：`dsh plugin add github:ssy-in/dsh-my-phone`）\n- **GitHub 仓库**：`ssy-in/dsh-my-phone`\n- **一句话描述**：手机扫码接上本机 DSH 桌面，通过局域网或 Cloudflare 隧道查看实时消息、处理授权提醒，桌面端带悬浮球。\n- **分类**：`utility`\n\n## 为什么值得收录\n\n它解决的是一类具体问题：人离开电脑时收不到 DSH 的进度和授权请求。插件在电脑端起一个管理口和扫码配对页，手机扫码后拿到一个移动端界面（不是把整套桌面 SPA 搬过去，是专门为手机做的单页 UI），能看到消息列表、收到授权/提问的提醒并直接处理；在家走局域网地址，在外走 Cloudflare 隧道。桌面端同时有一个可拖动的悬浮球，点开是同一套面板。\n\n与同类插件的区别：多数通知插件把消息推给 IM（微信/Telegram/飞书），这个不依赖任何第三方服务，直接给手机一个网页 UI，且写入方向也能操作（授权、静音、设备管理）。\n\n## 兼容性\n\n- **DSH 最低版本**：`package.json` 里 `dsh.bundle`（`./cordis.yml`）声明，未标最低版本；在 DSH Web 客户端下日常使用\n- **是否已在 DSH 上实测**：是（作者本机长期使用，含局域网与隧道两种链路）\n\n## 备注\n\n- 许可：MIT\n- 维护状态：活跃（最近提交每日都有）\n- 已知限制：需要手机与电脑在同一网络才能用局域网链路；隧道链路走 Cloudflare 免费 quick tunnel，每次重启域名会变\n- 仓库：https://github.com/ssy-in/dsh-my-phone\n"
+    }
+  ]
+}
