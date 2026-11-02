@@ -1,0 +1,36 @@
+name: publish
+
+# 打一个 v* tag 就发布到 npm（可信发布 / Trusted Publishing，不需要任何 token）
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # 可信发布必需：npm 用这个 OIDC token 换发布授权
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # 可信发布要求 npm CLI >= 11.5.1，actions 自带的版本不够新
+      - name: Update npm
+        run: npm install -g npm@latest && npm --version
+
+      - name: Smoke test
+        run: |
+          node --check src/widget.js
+          node test/tdz-scan.mjs
+
+      # 包里已经有 version，--access public 保证公开；--provenance 生成来源证明
+      - name: Publish
+        run: npm publish --access public --provenance
