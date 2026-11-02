@@ -1,5 +1,10 @@
 # 投稿到 awesome-dsh-plugin（插件商店）
 
+**状态（2026-11-01）：已收录。** PR #11054 已合并，
+条目已在 main 里：`data/plugins/ssy-in__dsh-my-phone.yml`。
+之后又误开过一个重复的 PR #11214，维护者（@fkysly）以「与 #11054 重复」关闭 ——
+结论：**不要重复提交同一个文件**，要改描述就基于最新 main 提一个「修改已有条目」的 PR。
+
 目标仓库：https://github.com/awesome-dsh-plugin/awesome-dsh-plugin
 规则原文：https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md
 查于 2026-10-31。
