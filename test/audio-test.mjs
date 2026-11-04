@@ -127,5 +127,11 @@ for (const [name, fn, extra] of [
   check(`${name} 只响一声`, r.n === PARTIALS + extra, `振荡器 ${r.n} 个`)
 }
 
+// 音量映射（v1.8.43：×0.02 → ×0.025）：0 = 真静音、50% = 1.25（原声基准）、100% = 2.5（增强 2.5 倍）
+check('音量 0% 是真静音（增益 0）', e.setVolume(0) === 0, String(e.setVolume(0)))
+check('音量 50% = 增益 1.25（原声基准）', e.setVolume(50) === 1.25, String(e.setVolume(50)))
+check('音量 100% = 增益 2.5（增强 2.5 倍）', e.setVolume(100) === 2.5, String(e.setVolume(100)))
+check('映射就是 ×0.025，旧的 ×0.02 已经没有了', /\*\s*0\.025/.test(code) && !/\*\s*0\.02(?!\d)/.test(code))
+
 console.log(`\n${pass}/${pass + fail} 通过`)
 process.exit(fail ? 1 : 0)

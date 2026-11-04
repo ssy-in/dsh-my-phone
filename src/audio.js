@@ -36,10 +36,12 @@
           }
           return ctx
         }
-        // 音量总闸：所有音效最后都接到这里。默认 50% = 增益 1.5（映射 gain = 百分比 × 0.03）
+        // 音量总闸：所有音效最后都接到这里。映射 gain = 百分比 × 0.025
+        //   0% = 真静音 / 50% = 增益 1.25（原声基准）/ 100% = 增益 2.5（默认值，增强 2.5 倍）
+        // v1.8.43：从 ×0.02（100% = 2.0）提到 ×0.025（100% = 2.5）—— 用户反馈 100% 还不够响。
         // 想整体调音量只改 volGain 的来源，不用动每个音自己的 gain
         let bus = null
-        let volGain = 1.5
+        let volGain = 2.5
         const masterBus = (c) => {
           if (!bus) {
             bus = c.createGain()
@@ -341,10 +343,10 @@
             }
             play()
           },
-          // 音量：传百分比（0~100）。映射 gain = 百分比 × 0.02 —— 100% 就是整体系数 2.0
+          // 音量：传百分比（0~100）。映射 gain = 百分比 × 0.025 —— 50% = 1.25（原声）、100% = 2.5
           setVolume(percent) {
             const pct = Math.max(0, Math.min(100, Number(percent) || 0))
-            volGain = pct * 0.02
+            volGain = pct * 0.025
             const c = get()
             if (bus && c) {
               try {
