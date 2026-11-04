@@ -342,6 +342,31 @@ function applyBody(ctx) {
       return ''
     }
   }
+  // v1.8.42：还没起标题的会话（比如刚开一个新会话、宿主的自动标题还没落下来），
+  // 原来一律回退成「未命名会话」——信息量为零。宿主自己的兜底其实是**第一条用户
+  // 消息**（`fallbackSessionTitle`：取前几个词、按字节截断），这里照它做一遍：
+  // 投影 `titleInput.first.text` 就是那条消息，投影没注册时安静地跳过。
+  const firstPromptOf = (session) => {
+    try {
+      const proj = typeof ctx.get === 'function' ? ctx.get('sessionProjections') : null
+      if (!proj || typeof proj.stateOf !== 'function' || !session) return ''
+      const st = proj.stateOf(session, 'titleInput')
+      const first = st && st.first
+      const text = first && (first.text || first.title)
+      return String(text == null ? '' : text).replace(/\s+/g, ' ').trim()
+    } catch {
+      return ''
+    }
+  }
+  const promptNameOf = (text) => {
+    const flat = String(text || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!flat) return ''
+    // 中英混排：先按空格取前 6 个词，再按字符收在 18 个字以内
+    const words = flat.split(' ').filter(Boolean).slice(0, 6).join(' ')
+    return words.length > 18 ? words.slice(0, 18) : words
+  }
   const sessionTitleOf = (session) => {
     const svc = titleFromService(session)
     if (svc) return svc
@@ -354,6 +379,9 @@ function applyBody(ctx) {
         '',
     ).trim()
     if (direct) return direct
+    // 没名字 → 用这条会话的第一句话当名字，比「未命名会话」有用
+    const fromPrompt = promptNameOf(firstPromptOf(session))
+    if (fromPrompt) return fromPrompt
     const base = baseOf(session && session.cwd)
     // 目录名也不是好名字：'sessions'、'.dsh' 这类一律当没有
     if (base && !/^(sessions?|\.dsh|home|root|workspace|tmp)$/i.test(base)) return base
