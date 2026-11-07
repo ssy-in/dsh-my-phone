@@ -1402,13 +1402,24 @@ check('备注变了才重画', bodyNode.children[0] !== firstRow && allText(body
   push19(feed19([{ id: 's3', seq: 503, at: Date.now(), kind: 'retry', text: '【丙会话】正在重试（第 2 次）', level: 1 }], []))
   check('面板开着时新消息照样响', opened && audioLog.slice(c0).includes('notice'), JSON.stringify(audioLog.slice(c0)))
 
-  // 19d. 一批补进一屏历史：最多响 3 声，别叮叮叮炸响
+  // 19d. 一批补进一屏历史：只响一次 —— 以前每条各响一次，一轮收尾的
+  //      「跑得有点久」(P1 三声) + 「完成了一轮」(P2 一声) 叠成五声连响
   const d0 = audioLog.length
   const many = []
   for (let i = 0; i < 6; i += 1) many.push({ id: 'h' + i, seq: 600 + i, at: Date.now(), kind: 'turnok', text: `【会话${i}】一轮完成`, level: 2 })
   push19(feed19(many))
   const got19d = audioLog.slice(d0)
-  check('一批涌进多条时最多响 3 声', got19d.length >= 1 && got19d.length <= 3, JSON.stringify(got19d))
+  check('一批涌进多条时只响一次', got19d.length === 1, JSON.stringify(got19d))
+
+  // 19d2. 同一批里混着 P1 和 P2：只响一声，而且是 P1 那声（最该被听见的）
+  const d20 = audioLog.length
+  push19(feed19([
+    { id: 'x1', seq: 701, at: Date.now(), kind: 'longrun', text: '【丁会话】一轮已经跑了 5 分钟还没结束', level: 1 },
+    { id: 'x2', seq: 702, at: Date.now(), kind: 'turnok', text: '【丁会话】完成了一轮', level: 2 },
+    { id: 'x3', seq: 703, at: Date.now(), kind: 'ctx', text: '【丁会话】的上下文已用 96%', level: 2 },
+  ]))
+  const got19d2 = audioLog.slice(d20)
+  check('一批里混着 P1/P2 时只响最紧急的那一声', got19d2.length === 1 && got19d2[0] === 'notice', JSON.stringify(got19d2))
   // 19e. 点文档任何地方都算「用户手势」—— 以前只在球和面板上绑，没点过球的时候音频一直是哑的
   const e0 = audioLog.length
   document.dispatch('pointerdown')

@@ -1050,19 +1050,19 @@ var bubbleBusyTimer = 0
     // 已经排着的不重复入队
     var inQueue = {}
     for (var q = 0; q < bubbleQueue.length; q++) inQueue[bubbleQueue[q].key] = true
-    var chimeN = 0
+    var chimeLv = -1
     for (var m = 0; m < fresh.length; m++) {
       if (inQueue[fresh[m].key]) continue
       bubbleQueue.push(fresh[m])
-      // v1.8.39：声音跟着「消息」走，不跟着「气泡」走 —— 只有「真的新入队」的这一条才响，
-      // 所以同一条消息不会因为反复收到快照而重复响。以前声音是在 pumpBubble() 里播的，
-      // 可面板开着时气泡会被压住排队，那段时间就一声不响；队列溢出被摘掉的几条也永远不响。
-      // 用户感知就是「有时候响有时候不响」。一批最多响 3 声，免得补一屏历史时叮叮叮炸响。
-      if (chimeN < 3) {
-        chimeN += 1
-        playLevel(fresh[m].level == null ? 2 : Number(fresh[m].level))
-      }
+      // v1.8.45：同一批只响**一次**，而且按这批里最紧急的那条来响。
+      // 以前是一批里每条各响一次（最多 3 次）：一轮跑完时「跑得有点久」P1 三声 +
+      // 「完成了一轮」P2 一声 + 上下文一句，叠起来就是五声连响 —— 用户听成了
+      // 「会话完成响 5 声」。现在只响一条，声音和「最该被听见的那件事」对齐。
+      var lvNew = fresh[m].level == null ? 2 : Number(fresh[m].level)
+      if (!isFinite(lvNew) || lvNew < 0) lvNew = 2
+      if (chimeLv < 0 || lvNew < chimeLv) chimeLv = lvNew
     }
+    if (chimeLv >= 0) playLevel(chimeLv)
     // 一次涌进来太多（比如手机刚连上补了一屏历史）时不能全排 —— 最多留 8 条。
     // v1.8.35：以前是 `slice(-3)` 直接截断，被截掉的那几条**没有记成已播**，
     // 下一轮又被当成新消息塞回来，于是队列永远在溢出、老是那几条在轮，别的永远轮不到。
