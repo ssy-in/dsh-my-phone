@@ -641,6 +641,7 @@ var bubbleBusyTimer = 0
       return {
         tag: '等授权',
         tagColor: '#B8790A',
+        lv: 0,
         meta: appr.length + ' 条',
         main: [{ t: String(first.text || '正在请求授权...') }],
         sign: '还有 ' + (appr.length - 1) + ' 条 · 点开消息看',
@@ -654,6 +655,7 @@ var bubbleBusyTimer = 0
       return {
         tag: '等授权',
         tagColor: '#B8790A',
+        lv: 0,
         main: nameSpans(body, who, '#B8790A'),
         sign: '点一下看详情 · 在 DSH 里批准或拒绝',
       }
@@ -665,6 +667,7 @@ var bubbleBusyTimer = 0
       return {
         tag: '新连接',
         tagColor: '#1a6fe0',
+        lv: 2,
         meta: hhmm(last.at),
         main: [{ t: last.label + '刚连进来' }],
         sign: '高级页·已配对设备里可断开',
@@ -675,6 +678,7 @@ var bubbleBusyTimer = 0
       return {
         tag: '新连接',
         tagColor: '#1a6fe0',
+        lv: 2,
         meta: u + ' 台',
         main: [{ t: '有 ' + u + ' 台设备刚连进来' }],
         sign: '高级页·已配对设备里可断开',
@@ -757,6 +761,7 @@ var bubbleBusyTimer = 0
     return {
       tag: tag,
       tagColor: color,
+      lv: lv,
       meta: hhmm(it && it.at),
       main: main,
       sign: it && it.pending ? '点开消息看详情 · 在 DSH 里批准或拒绝' : '点球打开「消息/日志」页',
@@ -814,14 +819,24 @@ var bubbleBusyTimer = 0
     }
     bubbleSig = sig
     bubble.textContent = ''
+    // v1.8.46：气泡不再是「死白一张」—— 按级别给底色（P0 米金 / P1 浅红 / P2 白）。
+    // 用户反馈「P0 的气泡还是白的，看不出急不急」，跟消息卡的三级配色对上了才一致。
+    // 尖角必须跟底色同色，否则白底气泡配米金三角会漏出一块白。
+    var lvCard = card && card.lv == null ? 2 : Number(card && card.lv)
+    var tint =
+      lvCard === 0
+        ? { bg: '#fff9ec', bd: 'rgba(184,121,10,.34)' }
+        : lvCard === 1
+          ? { bg: '#fff5f2', bd: 'rgba(207,59,43,.30)' }
+          : { bg: '#fff', bd: 'rgba(26,111,224,.20)' }
     bubble.style.cssText =
       'position:fixed;z-index:2147483001;width:244px;padding:12px 16px 13px;border-radius:16px;' +
-      'background:#fff;border:1px solid rgba(26,111,224,.20);box-shadow:0 8px 22px rgba(6,24,36,.14);' +
+      'background:' + tint.bg + ';border:1px solid ' + tint.bd + ';box-shadow:0 8px 22px rgba(6,24,36,.14);' +
       'text-align:left;opacity:0;transform:translateY(-2px);transition:opacity .16s ease,transform .16s ease;pointer-events:none'
     // 尖角（朝球那侧）—— 放在哪个边、纵向落点都由 placeBubble() 决定
     var tail = document.createElement('span')
     tail.style.cssText =
-      'position:absolute;top:22px;width:9px;height:9px;background:#fff;border:1px solid rgba(26,111,224,.20);' +
+      'position:absolute;top:22px;width:9px;height:9px;background:' + tint.bg + ';border:1px solid ' + tint.bd + ';' +
       'transform:rotate(45deg)'
     bubble.appendChild(tail)
     bubbleTail = tail
@@ -1060,6 +1075,9 @@ var bubbleBusyTimer = 0
       // 「会话完成响 5 声」。现在只响一条，声音和「最该被听见的那件事」对齐。
       var lvNew = fresh[m].level == null ? 2 : Number(fresh[m].level)
       if (!isFinite(lvNew) || lvNew < 0) lvNew = 2
+      // v1.8.46：完成一轮现在是 P0（金色卡、气泡停 10 秒），但它**不需要你动手** ——
+      // 声音只轻响一声，不然每轮收尾都是一串五声上行，听着像有急事。
+      if (fresh[m].kind === 'turnok' && lvNew === 0) lvNew = 2
       if (chimeLv < 0 || lvNew < chimeLv) chimeLv = lvNew
     }
     if (chimeLv >= 0) playLevel(chimeLv)

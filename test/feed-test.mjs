@@ -152,5 +152,16 @@ check(
   JSON.stringify(f9.tech.map((x) => x.kind)),
 )
 
+// 11. v1.8.46：「完成了一轮」提到 P0 —— 完成本身最该被看见，但不需要你动手
+gate.noteEvent('turnok', '【正好六个字】 完成了一轮')
+const f10 = gate.feed()
+const tk = f10.human.filter((x) => x.kind === 'turnok').pop()
+check('「完成了一轮」提到 P0', Boolean(tk) && tk.level === 0, `level=${tk && tk.level}`)
+check(
+  '「完成了一轮」排在 P1 的「正在重试」之前（同时间排序看级别）',
+  tk.level < f10.human.filter((x) => x.kind === 'retry').pop().level,
+  `turnok=${tk.level} retry=${f10.human.filter((x) => x.kind === 'retry').pop().level}`,
+)
+
 console.log(`\n${pass}/${pass + fail} 通过`)
 if (fail) process.exit(1)

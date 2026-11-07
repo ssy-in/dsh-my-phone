@@ -1429,5 +1429,47 @@ check('备注变了才重画', bodyNode.children[0] !== firstRow && allText(body
   check('解锁过一次就不再重复绑（第二次不再触发）', !audioLog.slice(e1).includes('unlock'), JSON.stringify(audioLog.slice(e1)))
 }
 
+// 20. v1.8.46：「完成了一轮」提到 P0 —— 气泡要是金色调，但只轻响一声
+{
+  panelIs404 = false
+  remoteSnapshot = null
+  const push20 = (feed) => {
+    const snap = {
+      lanEnabled: true,
+      tunnelEnabled: false,
+      lanUrl: 'http://192.168.1.107:18391/',
+      pairUrl: 'http://192.168.1.107:18391/pair?t=abc',
+      ticketExpiresAt: Date.now() + 120000,
+      tunnelAutoOffMinutes: 0,
+      mutedUntil: 0,
+      unread: 0,
+      deviceList: [],
+      notices: [],
+      approvals: [],
+      events: [],
+      feed,
+    }
+    FakeEventSource.last.onmessage({ data: JSON.stringify(snap) })
+  }
+  const feed20 = (human) => ({ pending: [], human, tech: [], techRaw: [], techCount: 0, unread: 0, pendingCount: 0 })
+
+  // 19c 把面板打开了，而面板开着时气泡会被压住不发 —— 直接收起来（isOpen 看的是 display）
+  const pnl20 = document.getElementById('dmp-panel')
+  if (pnl20) pnl20.style.display = 'none'
+  await tick()
+  // 先把前面几节留在队列里的气泡放干净，否则 pumpBubble() 会直接 return
+  for (let i = 0; i < 12; i += 1) {
+    runTimers('timeout')
+    await tick()
+  }
+  bubble.style.opacity = '0'
+  const a0 = audioLog.length
+  push20(feed20([{ id: 'd1', seq: 900, at: Date.now(), kind: 'turnok', text: '【戊会话】完成了一轮', level: 0 }]))
+  const got20 = audioLog.slice(a0)
+  check('完成一轮的气泡弹出来了', bubble.style.opacity === '1', bubble.style.opacity)
+  check('完成一轮的气泡底色是米金，不是死白', /#fff9ec/i.test(bubble.style.backgroundCSS || bubble.style.cssText || ''), bubble.style.cssText.slice(0, 160))
+  check('完成一轮只轻响一声（不是五声警报）', got20.length === 1 && got20[0] === 'short', JSON.stringify(got20))
+}
+
 console.log(`\n${pass}/${total} 通过`)
 if (pass !== total) process.exitCode = 1

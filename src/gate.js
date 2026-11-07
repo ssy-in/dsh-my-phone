@@ -152,6 +152,10 @@ export function createGate({
   // 以前它不在 HUMAN_KINDS 里，落到技术动态按 P2 处理，提示音只有 2 声、气泡 3 秒就没了，
   // 跟「等你授权」完全不是一个待遇。现在归到 P0（5 声 + 气泡停 10 秒）。
   const NEED_KINDS = new Set(['question'])
+  // v1.8.46：`turnok`（完成了一轮）提到 P0 —— 用户要的是「一轮跑完这件事本身最该被看见」。
+  // 但它不需要你动手，所以只给 P0 的**视觉待遇**（金色卡片、气泡停 10 秒、进红点）；
+  // 声音在 widget 那边单独降档（只轻响一声），否则每轮收尾都五声连响。
+  const DONE_KINDS = new Set(['turnok'])
   // v1.8.30：这类只留排查日志，不进「消息」也不进「技术动态」。
   // 「会话在等授权」已经在 pending 里有一张带 id 的卡了，再在技术动态里出现一次
   // 既重复又误导（用户就是看到技术动态里有「会话在等授权」才问是不是出错了）。
@@ -1590,7 +1594,7 @@ export function createGate({
           at: e.at,
           kind: e.kind,
           text: e.text,
-          level: NEED_KINDS.has(e.kind) ? 0 : WARN_KINDS.has(e.kind) ? 1 : 2,
+          level: NEED_KINDS.has(e.kind) || DONE_KINDS.has(e.kind) ? 0 : WARN_KINDS.has(e.kind) ? 1 : 2,
         })
     human.sort((x, y) => y.at - x.at)
     // 技术日志按 kind 合并：一次域外扫描能刷出几十条 401，逐条列没意义。
