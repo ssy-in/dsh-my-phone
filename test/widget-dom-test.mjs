@@ -1013,6 +1013,59 @@ check('备注变了才重画', bodyNode.children[0] !== firstRow && allText(body
   await tick()
 }
 
+// 15b. v1.8.47：单台设备的「删除」也是两次点击确认。
+// 真 bug：fingerprint() 里只放了 delAllArm，漏了 delArm → 第一次点「删除」时指纹没变、
+// render() 直接 return，按钮永远不变「再点一次」→ 第二下又回到未 armed 分支 → 删不掉。
+{
+  snapshot = {
+    ...snapshot,
+    deviceList: [
+      { id: 'd1', label: 'iPhone', note: 'isis', trusted: true, lastSeen: t11, remembered: true },
+      { id: 'd2', label: 'iPad', note: '', trusted: false, lastSeen: t11, remembered: true },
+    ],
+  }
+  const findBtn = (text) => {
+    const walk = (n) => {
+      if (!n || typeof n !== 'object') return null
+      if (String(n.tagName || '').toUpperCase() === 'BUTTON' && String(n.textContent || '').trim() === text) return n
+      for (const k of n.children || []) {
+        const hit = walk(k)
+        if (hit) return hit
+      }
+      return null
+    }
+    return walk(root)
+  }
+  const adv15b = findBtn('高级')
+  if (adv15b) adv15b.dispatch('click')
+  await tick()
+  await tick()
+  const delBtn = findBtn('删除')
+  check('每台设备行上有「删除」按钮', !!delBtn)
+  const before15b = fetchCalls.filter((c) => c.url.includes('/__myphone/panel/device')).length
+  if (delBtn) delBtn.dispatch('click')
+  await tick()
+  await tick()
+  check('点一次变「再点一次」（指纹里必须有 delArm）', !!findBtn('再点一次'), allText(root).slice(-160))
+  check(
+    '第一下不发删除请求',
+    fetchCalls.filter((c) => c.url.includes('/__myphone/panel/device')).length === before15b,
+    '',
+  )
+  const armed15b = findBtn('再点一次')
+  if (armed15b) armed15b.dispatch('click')
+  await tick()
+  await tick()
+  const delPosts = fetchCalls.filter((c) => c.url.includes('/__myphone/panel/device'))
+  check(
+    '再点一次才真的删这台设备（body 带 remove:true 与设备 id）',
+    delPosts.length > before15b &&
+      String(delPosts[delPosts.length - 1].opts.body).includes('"remove":true') &&
+      String(delPosts[delPosts.length - 1].opts.body).includes('"d1"'),
+    String(delPosts[delPosts.length - 1] && delPosts[delPosts.length - 1].opts.body),
+  )
+}
+
 // 13. v1.8.33：连接页改成两张二维码卡片（局域网 / 外出），可点切换，文案按侧不同
 {
   panelIs404 = false

@@ -2549,7 +2549,7 @@ var bubbleBusyTimer = 0
           ]),
         )
       }
-      out.push(h4i('音效', '只是提示音，不影响连接：滑入滑出、按下松手各一声短音；气泡音按优先级 P0 五声 / P1 三声 / P2 两声。'))
+      out.push(h4i('音效', '只是提示音，不影响连接：滑入滑出、按下松手各一声短音；气泡音按优先级 P0 五声 / P1 三声 / P2 一声。'))
       soundRows().forEach(function (n) {
         out.push(n)
       })
@@ -2717,6 +2717,11 @@ var bubbleBusyTimer = 0
           // v1.8.31：「删除所有设备凭证」按一下会进二次确认态，这个状态必须进指纹，
           // 否则指纹没变 → render() 直接 return，按钮点上去一点反应都没有。
           delAllArm,
+          // v1.8.47：单台设备的「删除」同样是两次点击确认 —— 当时只把 delAllArm 放进了
+          // 指纹，漏了 delArm，于是第一次点「删除」时 render() 被指纹拦下、按钮不会变成
+          // 「再点一次」，第二次点又回到「没 armed」的分支 → 永远删不掉。
+          delArm.id,
+          delArm.at,
           // v1.8.26 修：这一行原来写的是 `infoOpen`，而这个变量在整个文件里从未声明过 →
           // fingerprint() 每次都抛 ReferenceError，被下面的 catch 吞掉后返回 ''，
           // 空串让 `sig === lastPaintSig` 永远不成立 → 每次轮询都整块重建面板 DOM。
