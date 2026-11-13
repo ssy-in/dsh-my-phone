@@ -2374,7 +2374,7 @@ var bubbleBusyTimer = 0
         h('div', {
           class: 'dmp-hint',
           style: 'margin:10px 0 4px',
-          text: '技术动态（「正在用工具」这类高频的不弹气泡、不响音，这儿都记着；其余会弹。都不进红点 —— 红点只算要人判断的）',
+          text: '技术动态（只记录，不弹气泡、不响音，也不进红点 —— 红点只算要人判断的）',
         }),
       ]
       var wrap = h('div', { class: 'dmp-tech' })

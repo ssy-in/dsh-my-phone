@@ -557,17 +557,9 @@ function applyBody(ctx) {
           // 结果回来（tool/result 同一个 callId）就等于回答完了 —— 按 callId 收掉气泡。
           if (event.type === 'tool/call') {
             const tool = String(evf('toolName') || '')
-            // v1.8.19：把「会话名 正在用 工具」加回来（用户要求）。
-            // v1.8.22：这类技术动态也会弹气泡 + 响一声（用户要求「所有消息都弹窗和音效」），
-            // 但依旧不进红点 —— 红点只算要人判断的。同一会话 60 秒记一条，免得刷屏。
-            if (tool) {
-              const lastTool = toolLoggedAt.get(`tool:${sid}`) || 0
-              const toolNow = Date.now()
-              if (toolNow - lastTool > 60_000) {
-                toolLoggedAt.set(`tool:${sid}`, toolNow)
-                gate.noteEvent?.('tool', `【${title || '(无标题会话)'}】 正在用 ${tool}`)
-              }
-            }
+            // v1.8.48：去掉「会话名 正在用 工具」这条技术动态。
+            // 宿主这一版根本不派发 tool/call（实测 feed.tech 恒为 0 条），这条永远发不出来，
+            // 留着只是死代码 + 一个永远空着的标签。
             if (/ask[_-]?user|AskUserQuestion/i.test(tool)) {
               gate.noteAlert?.('question', `【${title}】 正在等你回答...`, { ref: `ask:${callId}`, sticky: true })
               gate.noteEvent?.('question', `【${title}】 在等你回答（${tool}）`)
