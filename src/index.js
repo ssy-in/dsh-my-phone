@@ -556,10 +556,14 @@ function applyBody(ctx) {
           // 「等你回答」：宿主没有 question/asked 这种事件，提问就是一次 ask_user_question 工具调用，
           // 结果回来（tool/result 同一个 callId）就等于回答完了 —— 按 callId 收掉气泡。
           if (event.type === 'tool/call') {
-            const tool = String(evf('toolName') || '')
-            // v1.8.48：去掉「会话名 正在用 工具」这条技术动态。
-            // 宿主这一版根本不派发 tool/call（实测 feed.tech 恒为 0 条），这条永远发不出来，
-            // 留着只是死代码 + 一个永远空着的标签。
+            // v1.8.49（真 bug）：内核 SessionEventMap 里 'tool/call' 的数据是
+            // { turn, step, callId, name, arguments } —— 字段叫 **name**，不叫 toolName。
+            // 之前只读 toolName，永远是空串，于是：
+            //   · 「正在用某某工具」从来没出现过（v1.8.48 还以为宿主不派发这类事件）
+            //   · 「正在等你回答」同样永远不触发（判断的是 ask_user_question 这个工具名）
+            // 两个都读一下，谁有就用谁（toolName 是老写法，留着兜底）。
+            const tool = String(evf('name') || evf('toolName') || '')
+            // v1.8.48：去掉「会话名 正在用 工具」这条技术动态（用户要求）。
             if (/ask[_-]?user|AskUserQuestion/i.test(tool)) {
               gate.noteAlert?.('question', `【${title}】 正在等你回答...`, { ref: `ask:${callId}`, sticky: true })
               gate.noteEvent?.('question', `【${title}】 在等你回答（${tool}）`)
@@ -567,7 +571,12 @@ function applyBody(ctx) {
             return
           }
           if (event.type === 'tool/result') {
-            if (callId) gate.clearAlertRef?.(`ask:${callId}`)
+            // v1.8.49：tool/result 的数据是 { turn, step, message, error?, meta? }，
+            // 工具调用的 id 在 message.toolCallId 上，顶层没有 callId ——
+            // 以前这里用 evf('callId') 永远取不到，于是「等你回答」的气泡收不掉。
+            const rid = String(evf('callId') || (ev.message && ev.message.toolCallId) || '')
+            if (rid) gate.clearAlertRef?.(`ask:${rid}`)
+            else if (callId) gate.clearAlertRef?.(`ask:${callId}`)
             return
           }
           // 上下文压缩：长会话会先整理再继续，这期间界面看着像卡住，给个气泡说明

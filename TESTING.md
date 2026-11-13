@@ -20,6 +20,7 @@ node test/icon-public-test.mjs # 公网口静态图标白名单（6 项）
 node test/public-assets-test.mjs # 公网口可以拿到的静态资源清单（5 项）
 node test/stale-host-test.js   # 旧隧道域名拦截（5 项）
 node test/sse-real.mjs         # 真 http.Server 上的 SSE 推送（4 项）
+node test/event-fields-test.mjs  # 事件字段名守卫：tool/call 的工具名、tool/result 的调用 id（读错就是静默失效）
 node test/tdz-scan.mjs         # 静态扫描：渲染路径上「先用后声明」的 const
 ```
 

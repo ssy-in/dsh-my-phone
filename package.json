@@ -1,6 +1,6 @@
 {
   "name": "dsh-my-phone",
-  "version": "1.8.48",
+  "version": "1.8.49",
   "description": "在手机上继续用电脑上的 DeepSeek Harness —— 扫一次码就能连回家里的会话，自带多重消息提示与通知弹窗（悬浮球气泡 + 三档音效 + 红点）。",
   "type": "module",
   "main": "src/index.js",

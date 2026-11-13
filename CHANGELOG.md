@@ -1,3 +1,9 @@
+## v1.8.49
+
+- 修：`tool/call` 里工具名的字段读错了 —— 内核 `SessionEventMap` 的 `'tool/call'` 数据是 `{ turn, step, callId, name, arguments }`，字段叫 **`name`**，代码只读了 `toolName`，永远拿到空串。后果有两个：技术动态里永远没有「正在用某某工具」，以及「正在等你回答」（靠判断 `ask_user_question` 这个工具名）永远不触发。现在两个字段都读。
+- 修：`tool/result` 的调用 id 在 `message.toolCallId` 上，顶层没有 `callId`，导致「等你回答」的气泡即使弹出来也收不掉。现在按 `toolCallId` 收。
+- 1.8.48 里「宿主不派发 tool/call」这句归因是错的，事件一直是派发的，只是名字取不到。
+
 ## v1.8.48
 
 - 去掉「会话名 正在用 工具」这条技术动态：宿主这一版不派发 tool/call 事件，实测技术动态恒为 0 条，这段代码永远跑不到，只会留一个永远空着的标签。消息页技术动态的说明文案同步改掉。
