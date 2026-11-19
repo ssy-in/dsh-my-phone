@@ -1522,6 +1522,23 @@ check('备注变了才重画', bodyNode.children[0] !== firstRow && allText(body
   check('完成一轮的气泡弹出来了', bubble.style.opacity === '1', bubble.style.opacity)
   check('完成一轮的气泡底色是米金，不是死白', /#fff9ec/i.test(bubble.style.backgroundCSS || bubble.style.cssText || ''), bubble.style.cssText.slice(0, 160))
   check('完成一轮只轻响一声（不是五声警报）', got20.length === 1 && got20[0] === 'short', JSON.stringify(got20))
+
+  // ---------- 21 同一句文案再出现一次，仍然要弹、要响（v1.8.50） ----------
+  // 旧版去重键是 'f|' + seq + '|' + 文案，而人工消息没有 seq → 退化成按文案去重，
+  // 「在等你回答（ask_user_question）」这种固定文案从第二次起被永久吞掉，不弹也不响。
+  for (let i = 0; i < 12; i += 1) { runTimers('timeout'); await tick() }
+  bubble.style.opacity = '0'
+  const mk21 = (id, at) => ({ id, at, kind: 'question', text: '【己会话】 在等你回答（ask_user_question）', level: 0 })
+  const a21 = audioLog.length
+  push20(feed20([mk21('q1', 1795000000001)]))
+  const got21 = audioLog.slice(a21)
+  check('21 第一次「等你回答」弹出来并响了', bubble.style.opacity === '1' && got21.length === 1, JSON.stringify(got21))
+  for (let i = 0; i < 12; i += 1) { runTimers('timeout'); await tick() }
+  bubble.style.opacity = '0'
+  const a22 = audioLog.length
+  push20(feed20([mk21('q1', 1795000000001), mk21('q2', 1795000000002)]))
+  const got22 = audioLog.slice(a22)
+  check('21 同文案的第二次也弹了、也响了（旧版这里被静默吞掉）', bubble.style.opacity === '1' && got22.length === 1, JSON.stringify(got22))
 }
 
 console.log(`\n${pass}/${total} 通过`)

@@ -890,6 +890,18 @@ var bubbleBusyTimer = 0
   var lastShownIt = null
 
   // 把当前快照里所有「够格弹」的消息按时间正序摊出来
+  // v1.8.50：气泡去重键。以前用 `seq`，但 gate 的人工消息没有 seq（只有 id/at/kind/text/level），
+  // 于是所有人工消息的 key 都退化成「前缀 + 文案」，**文案完全相同的第二条起永远弹不出来**
+  // ——「在等你回答（ask_user_question）」「完成了一轮」都是固定文案，第二次就没反应了。
+  // 现在优先用 id + at（每条事件唯一），实在没有才退回文案。
+  function itemKey(prefix, it) {
+    var id = it && it.id != null ? String(it.id) : ''
+    var at = it && it.at != null ? String(it.at) : ''
+    var seq = it && it.seq != null ? String(it.seq) : ''
+    if (id || at || seq) return prefix + '|' + id + '|' + at + '|' + seq
+    return prefix + '|x|' + String((it && it.text) || '')
+  }
+
   function bubbleCandidates() {
     // 技术类事件的级别：出问题了才给 P1（橙），其余一律 P2（青）。
     var TECH_LEVEL = { error: 1, upstream: 1 }
@@ -904,7 +916,13 @@ var bubbleBusyTimer = 0
       // 「xx 正在用 Read」这类频率太高，不弹气泡（只留在消息/日志页里）
       if (bubbleSilent(it.kind)) continue
       out.push({
-        key: 'f|' + String(it.seq == null ? '' : it.seq) + '|' + String(it.text),
+        // v1.8.50（真 bug）：key 原来用 `it.seq`，可 gate 给的人工消息**没有 seq** 这个字段
+        // （只有 id / at / kind / text / level），于是 key 退化成 'f||文案'。
+        // 结果：同一个会话里「【会话】 完成了一轮」「【会话】 在等你回答（ask_user_question）」
+        // 这类**文案完全相同**的消息，第二次开始 key 一模一样 → playedKeys 里已存在 →
+        // 直接 skip，不弹也不响，而且那条消息一直留在列表里，永远不会被 forget 掉。
+        // 现在用 id + at 保证每条事件唯一（at 是毫秒时间戳，同一毫秒两条也会靠 id 区分）。
+        key: itemKey('f', it),
         at: it.at,
         kind: it.kind,
         level: it.level == null ? 2 : it.level,
@@ -921,7 +939,7 @@ var bubbleBusyTimer = 0
       if (!t || !t.text) continue
       if (bubbleSilent(t.kind)) continue
       out.push({
-        key: 't|' + String(t.kind || '') + '|' + String(t.text),
+        key: itemKey('t', t),
         at: t.at,
         kind: t.kind,
         // v1.8.35：技术类事件以前一律按 P2（蓝色「新消息」）算 —— 于是「出错了」
